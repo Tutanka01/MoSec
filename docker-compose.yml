@@ -1,0 +1,29 @@
+services:
+
+  sast-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mosec/sast-agent:latest
+
+    # ── Volumes ─────────────────────────────────────────────────────────
+    volumes:
+      # Target repository — set REPO_PATH in your shell or a .env file:
+      #   export REPO_PATH=/absolute/path/to/target-repo
+      - ${REPO_PATH:-/tmp/target-repo}:/repo:ro
+      # Persisted pipeline outputs (SARIF, markdown, JSON intermediates)
+      - ${OUTPUT_DIR:-./output}:/output
+      # Semgrep rules scratch space
+      - /tmp/audit_rules:/tmp/audit_rules
+
+    # ── Environment ──────────────────────────────────────────────────────
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://llm.eva.univ-pau.fr/v1}
+      LLM_MODEL: ${LLM_MODEL:-gemma-4-31b-it-q8_0}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+
+    # ── Default command ──────────────────────────────────────────────────
+    # Override with `docker compose run sast-agent --phase 2 --keep-rules`
+    command:
+      - --repo-path=/repo
+      - --output-dir=/output

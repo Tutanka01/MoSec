@@ -1,0 +1,16 @@
+# Runtime
+openai>=1.30.0
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+PyYAML>=6.0.1
+
+# SAST tools
+semgrep>=1.75.0
+
+# AST analysis
+tree-sitter>=0.22.0
+tree-sitter-python>=0.22.0
+tree-sitter-javascript>=0.22.0
+
+# TOML parsing (stdlib tomllib is Python 3.11+; this is the backport)
+tomli>=2.0.1; python_version < "3.11"
