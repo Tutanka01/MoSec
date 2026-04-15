@@ -17,7 +17,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from models.schemas import FileFinding, RawFinding, RepositoryManifest
-from utils.llm import LLMClient, LLMError
+from utils.llm import EmptyResponseError, LLMClient, LLMError
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,8 @@ class TriageAgent:
                 "role": "user",
                 "content": (
                     f"File: {rel_path}\n\n"
-                    f"```\n{numbered}\n```"
+                    f"```\n{numbered}\n```\n\n"
+                    f"Respond with a JSON array only."
                 ),
             },
         ]
@@ -123,6 +124,12 @@ class TriageAgent:
 
         logger.debug("Phase 1 | %s | tokens: %s", file_path, usage)
 
+        # The assistant prefill forced the model to start with "[".
+        # The API returns only the continuation, so we restore the opening bracket
+        # unless the model echoed it back itself.
+        if content and not content.lstrip().startswith("["):
+            content = "[" + content
+
         return self._parse_llm_response(content, file_path)
 
     # ------------------------------------------------------------------
@@ -134,8 +141,16 @@ class TriageAgent:
     ) -> list[FileFinding]:
         try:
             raw = self.llm.extract_json(content)
+        except EmptyResponseError:
+            # Model returned nothing — context overflow, refusal, or server hiccup.
+            # Already retried in LLMClient.chat(); log clearly and move on.
+            logger.warning(
+                "Phase 1 | %s: LLM empty response (possible context overflow or model refusal)",
+                file_path,
+            )
+            return []
         except ValueError as exc:
-            logger.warning("Phase 1 | JSON extraction failed for %s: %s", file_path, exc)
+            logger.warning("Phase 1 | %s: JSON parse failed — %s", file_path, exc)
             return []
 
         if not isinstance(raw, list):

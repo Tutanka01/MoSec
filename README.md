@@ -108,9 +108,8 @@ Given a vulnerable Flask application, MoSec produces:
 | CVSS    | CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N → 9.1 CRITICAL |
 
 ### Proof of Concept
-```
+
 1' OR '1'='1'; --
-```
 
 ### Remediation
 Use parameterised queries: `cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))`

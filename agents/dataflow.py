@@ -53,11 +53,11 @@ Decide what to do next.  You must choose ONE action from this list:
   - conclude         (you have enough evidence to make a final decision)
 
 Respond ONLY in JSON:
-{
+{{
   "reasoning": "<one paragraph — what do you know and what do you need>",
   "action": "<one of the five actions above>",
   "action_param": "<optional parameter, e.g. line range '1-200' for read_context or a grep pattern>"
-}
+}}
 """
 
 _CONCLUDE_PROMPT = """\
@@ -71,10 +71,10 @@ Evidence:
 {evidence}
 
 Respond ONLY in JSON:
-{
+{{
   "verdict": "confirmed" | "sanitized" | "unreachable",
   "reasoning": "<explanation>"
-}
+}}
 """
 
 _READ_CONTEXT_LINES: int = 80

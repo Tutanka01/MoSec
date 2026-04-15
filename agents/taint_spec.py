@@ -107,7 +107,7 @@ class TaintSpecAgent:
         ]
 
         try:
-            content, usage = self.llm.chat(messages, max_tokens=1024, temperature=0.05)
+            content, usage = self.llm.chat(messages, max_tokens=2048, temperature=0.05)
         except LLMError as exc:
             raise RuntimeError(f"LLM call failed: {exc}") from exc
 

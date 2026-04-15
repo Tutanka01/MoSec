@@ -20,6 +20,16 @@ class LLMError(Exception):
     """Raised when the LLM call fails after all retries."""
 
 
+class EmptyResponseError(ValueError):
+    """Raised when the LLM returns a non-null but empty response body.
+
+    Distinct from a JSON parse error: the model produced no output at all,
+    which typically indicates a context-length overflow, a model refusal,
+    or a transient server issue.  Callers can catch this specifically to
+    emit a targeted warning rather than a generic "JSON extraction failed".
+    """
+
+
 class LLMClient:
     """Thin wrapper around the OpenAI SDK targeting a local llama-server."""
 
@@ -44,6 +54,10 @@ class LLMClient:
         """
         Send a chat request.  Returns (content_str, usage_dict).
         Raises LLMError after *max_retries* failed attempts.
+
+        An empty response from the model is treated as a transient failure
+        and retried (up to max_retries).  If still empty after all retries,
+        the empty string is returned with a WARNING — callers must handle it.
         """
         last_exc: Exception | None = None
         for attempt in range(max_retries):
@@ -65,11 +79,27 @@ class LLMClient:
                     self.total_prompt_tokens += usage.get("prompt_tokens", 0)
                     self.total_completion_tokens += usage.get("completion_tokens", 0)
 
-                logger.debug(
-                    "LLM call ok | model=%s tokens=%s",
-                    self.model,
-                    usage,
-                )
+                # Treat an empty response as a soft failure and retry.
+                # Causes: context overflow, model refusal, transient server hiccup.
+                if not content.strip():
+                    if attempt < max_retries - 1:
+                        wait = retry_base_delay ** (attempt + 1)
+                        logger.warning(
+                            "LLM empty response (attempt %d/%d) — retrying in %.1fs",
+                            attempt + 1,
+                            max_retries,
+                            wait,
+                        )
+                        time.sleep(wait)
+                        continue
+                    else:
+                        logger.warning(
+                            "LLM empty response after %d attempt(s) — giving up",
+                            max_retries,
+                        )
+                        return content, usage
+
+                logger.debug("LLM call ok | model=%s tokens=%s", self.model, usage)
                 return content, usage
 
             except (RateLimitError, APIConnectionError, APIStatusError) as exc:
@@ -101,8 +131,14 @@ class LLMClient:
         markdown fences, have prose before/after, or contain partial JSON.
 
         Raises ValueError if no valid JSON can be found.
+        Raises EmptyResponseError (subclass of ValueError) if *text* is empty.
         """
         text = text.strip()
+
+        # Distinguish "empty response" from "unparseable JSON" — they have
+        # different root causes and different remediation paths.
+        if not text:
+            raise EmptyResponseError("LLM returned an empty response")
 
         # 1. Strip ```json ... ``` or ``` ... ``` fences
         fenced = re.sub(
@@ -113,6 +149,8 @@ class LLMClient:
         )
         if fenced != text:
             text = fenced.strip()
+            if not text:
+                raise EmptyResponseError("LLM returned an empty response (empty fenced block)")
 
         # 2. Direct parse
         try:
