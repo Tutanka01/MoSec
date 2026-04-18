@@ -6,9 +6,68 @@ from __future__ import annotations
 
 import math
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# ReAct / Verifier shared types (Lots A & D)
+# ---------------------------------------------------------------------------
+
+
+class ReActStep(BaseModel):
+    """Validated shape of the LLM's reasoning step in the ReAct loop (Lot A)."""
+
+    reasoning: str = ""
+    action: Literal[
+        "run_semgrep", "grep_sanitizers", "read_context", "run_codeql", "conclude"
+    ]
+    action_param: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class CodeLocation(BaseModel):
+    """Precise code location used inside StructuredEvidence (Lot D)."""
+
+    file: str
+    line_start: int
+    line_end: int
+    snippet: str = ""
+
+
+class StructuredEvidence(BaseModel):
+    """Rich evidence record replacing the raw-string result field (Lot D)."""
+
+    kind: Literal[
+        "semgrep_matches", "grep_hits", "code_slice",
+        "codeql_paths", "no_flow", "conclude", "unknown",
+    ]
+    hits: list[CodeLocation] = Field(default_factory=list)
+    summary: str
+
+
+class TraceResult(BaseModel):
+    """Return type of the AST-based static trace (Lot C)."""
+
+    reachable: bool
+    reason: str = ""
+    path: list[str] = Field(default_factory=list)
+    function_scope: str = ""
+
+
+class ASTCandidate(BaseModel):
+    """Source or sink candidate extracted from the AST (Lot C)."""
+
+    kind: Literal["source", "sink"]
+    name: str
+    line: int
+    col: int = 0
+    # How the sink is used: call, method_call, property_assignment, subscript_assignment
+    sink_kind: str = "call"
+    assigned_from: Optional[str] = None
+    returns_var: Optional[str] = None
+    args: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +149,12 @@ class TaintSpec(BaseModel):
     taint_path_summary: str
     # Path to the generated Semgrep rule YAML
     semgrep_rule_path: Optional[str] = None
+    # AST metadata populated when TaintSpecAgent uses AST grounding (Lot C)
+    sink_kind: str = "call"
+    source_line: Optional[int] = None
+    source_col: Optional[int] = None
+    sink_line: Optional[int] = None
+    sink_col: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +167,7 @@ class VerificationEvidence(BaseModel):
     action: str
     result: str
     conclusion: str
+    structured: Optional[StructuredEvidence] = None  # Lot D rich evidence
 
 
 class ConfirmedFlow(BaseModel):

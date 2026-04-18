@@ -1,12 +1,12 @@
 # Extending MoSec SAST
 
-MoSec is designed to be extended. This document covers the four most common extension scenarios.
+MoSec is designed to be extended. This document covers the five most common extension scenarios.
 
 ---
 
 ## Adding a new language
 
-Support for a new language requires changes in four places.
+Support for a new language requires changes in five places.
 
 ### 1. File collection (`agents/ingestion.py`)
 
@@ -18,61 +18,14 @@ _EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".rb"}  # add .rb for Ruby
 
 ### 2. Entry point patterns (`agents/ingestion.py`)
 
-Add a pattern dict for the new language:
-
-```python
-_RUBY_PATTERNS: dict[str, list[str]] = {
-    "http_route": [
-        r"get\s+['\"]\/",
-        r"post\s+['\"]\/",
-        r"put\s+['\"]\/",
-        r"delete\s+['\"]\/",
-        r"match\s+['\"]\/",
-    ],
-    "file_read": [
-        r"\bFile\.open\b",
-        r"\bFile\.read\b",
-        r"\bIO\.read\b",
-    ],
-    "subprocess": [
-        r"\bsystem\s*\(",
-        r"\bexec\s*\(",
-        r"\bspawn\s*\(",
-        r"%x\{",
-        r"`[^`]+`",
-    ],
-    "eval": [
-        r"\beval\s*\(",
-        r"\binstance_eval\b",
-        r"\bclass_eval\b",
-    ],
-    "deserialization": [
-        r"\bMarshal\.load\b",
-        r"\bYAML\.load\b",
-        r"\bJSON\.parse\b",
-    ],
-}
-```
-
-Wire it into `_extract_entry_points()`:
-
-```python
-if f.suffix == ".py":
-    patterns = _PY_PATTERNS
-elif f.suffix in {".js", ".ts", ".jsx", ".tsx"}:
-    patterns = _JS_PATTERNS
-elif f.suffix == ".rb":
-    patterns = _RUBY_PATTERNS
-else:
-    continue
-```
+Add a pattern dict for the new language and wire it into `_extract_entry_points()`.
 
 ### 3. Semgrep language identifier (`utils/sast.py`)
 
-Add the mapping in `generate_semgrep_rule()`:
+`_LANG_MAP` in `utils/sast.py` maps file suffix to Semgrep language identifier:
 
 ```python
-lang_map = {
+_LANG_MAP: dict[str, str] = {
     ".py": "python",
     ".js": "javascript",
     ".ts": "typescript",
@@ -82,9 +35,44 @@ lang_map = {
 }
 ```
 
-### 4. tree-sitter parser (`agents/ingestion.py`)
+### 4. AST candidate extraction (`utils/ast_extractor.py`)
 
-Install the tree-sitter grammar: `pip install tree-sitter-ruby`
+Add known sources/sinks for the new language to the dictionaries at the top of `ast_extractor.py`:
+
+```python
+_RUBY_SOURCES: set[str] = {
+    "params[]", "params.require", "cookies[]",
+    "request.body.read", "request.raw_post",
+}
+
+_RUBY_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
+    "CWE-89": [("execute", "method_call"), ("exec_query", "method_call")],
+    "CWE-78": [("system", "call"), ("exec", "call"), ("`", "call")],
+    ...
+}
+```
+
+Then add a handler in `TaintCandidateExtractor.extract()` and `get_cfg()`:
+
+```python
+elif suffix == ".rb":
+    return self._extract_ruby(code, center_line, cwe, radius)
+```
+
+For Ruby, use tree-sitter if `pip install tree-sitter-ruby` is available, or add it to `requirements.txt`.
+
+### 5. tree-sitter parser (`agents/ingestion.py`)
+
+Install the grammar:
+
+```bash
+pip install tree-sitter-ruby
+```
+
+Add to `requirements.txt`:
+```
+tree-sitter-ruby>=0.22.0
+```
 
 Add the parser in `_init_parsers()`:
 
@@ -93,104 +81,58 @@ import tree_sitter_ruby as tsruby
 self._rb_parser = Parser(Language(tsruby.language()))
 ```
 
-Add the file type in `_analyse_file_ast()`:
-
-```python
-elif path.suffix == ".rb" and self._rb_parser:
-    tree = self._rb_parser.parse(code)
-    return self._summarise_tree(tree, rel, is_python=False)
-```
-
-Add Ruby tree-sitter node types in `_summarise_tree()` if needed (Ruby uses `method`, `class` node types rather than `function_definition`/`class_definition`).
-
-### 5. CodeQL database (optional)
-
-CodeQL supports Ruby natively. Add Ruby detection in `_build_codeql_database()`:
-
-```python
-has_rb = any(repo.rglob("*.rb"))
-lang = "python" if has_py else ("javascript" if has_js else ("ruby" if has_rb else None))
-```
-
 ---
 
 ## Adding a custom agent phase
 
-Suppose you want to add a Phase 2.5 that checks each taint spec against a known CVE database before proceeding to data flow verification.
+Example: a Phase 2.5 that cross-references taint specs against a known CVE database.
 
 ### 1. Create the agent class
 
 ```python
 # agents/cve_check.py
-from __future__ import annotations
-import json
-import logging
-from pathlib import Path
 from models.schemas import TaintSpec
+import logging
 
 logger = logging.getLogger(__name__)
 
 class CVECheckAgent:
-    """Phase 2.5: cross-reference taint specs against known CVE patterns."""
+    """Phase 2.5: annotate taint specs with matching CVE references."""
 
     KNOWN_PATTERNS = {
-        "pickle.loads": "CWE-502 / CVE-2019-20907 (pickle deserialization)",
-        "yaml.load":    "CWE-502 / CVE-2017-18342 (PyYAML unsafe load)",
+        "pickle.loads": "CVE-2019-20907 (pickle deserialization)",
+        "yaml.load":    "CVE-2017-18342 (PyYAML unsafe load)",
     }
-
-    def __init__(self, output_dir: str) -> None:
-        self.output_dir = Path(output_dir)
 
     def run(self, specs: list[TaintSpec]) -> list[TaintSpec]:
         for spec in specs:
             for pattern, cve_ref in self.KNOWN_PATTERNS.items():
                 if pattern in spec.sink.lower():
-                    logger.info(
-                        "CVE match | %s → %s", spec.finding_id, cve_ref
-                    )
-                    # Annotate the spec (add field if you extend TaintSpec)
-                    break
-        # Return all specs — this agent annotates, doesn't filter
-        return specs
+                    logger.info("CVE match | %s → %s", spec.finding_id, cve_ref)
+        return specs  # annotates; does not filter
 ```
 
-### 2. Add the schema field (if needed)
-
-In `models/schemas.py`, extend `TaintSpec`:
-
-```python
-class TaintSpec(BaseModel):
-    ...
-    cve_reference: Optional[str] = None  # added by CVECheckAgent
-```
-
-### 3. Wire it into `pipeline.py`
+### 2. Wire it into `pipeline.py`
 
 ```python
 from agents.cve_check import CVECheckAgent
 
 # Between Phase 2 and Phase 3:
-if start_phase <= 2:
-    agent2 = TaintSpecAgent(llm, str(output_dir))
-    taint_specs = agent2.run(findings)
-
-    # Phase 2.5
-    agent25 = CVECheckAgent(str(output_dir))
-    taint_specs = agent25.run(taint_specs)
+taint_specs = agent2.run(findings)
+agent25 = CVECheckAgent()
+taint_specs = agent25.run(taint_specs)
 ```
-
-No new intermediate JSON file is required if the agent is purely annotating — the taint_specs.json from Phase 2 is overwritten. If you need separate resumability, save to `cve_specs.json` and add a loader in `pipeline.py`.
 
 ---
 
-## Swapping the LLM backend
+## Swapping or splitting the LLM backend
 
-The `LLMClient` in `utils/llm.py` talks to any OpenAI-compatible endpoint. Changing the backend is a one-line change in `.env`:
+`LLMClient` talks to any OpenAI-compatible endpoint. Change the backend in `.env`:
 
 ```bash
 # Local llama.cpp server
 LLM_BASE_URL=http://localhost:8080/v1
-LLM_MODEL=gemma-4-31b-it-q8_0
+LLM_MODEL=qwen2.5-coder-32b
 
 # Ollama
 LLM_BASE_URL=http://localhost:11434/v1
@@ -200,102 +142,99 @@ LLM_MODEL=llama3.3:70b
 LLM_BASE_URL=https://vllm.internal.example.com/v1
 LLM_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct
 LLM_API_KEY=your-bearer-token
-
-# Actual OpenAI (breaks the "no cloud" guarantee — use only for testing)
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o
-LLM_API_KEY=sk-...
 ```
 
 ### Using different models per phase
 
-For maximum performance, you may want a large model for reasoning phases (3, 4, 5) and a smaller/faster model for bulk triage (phase 1). To do this, instantiate two `LLMClient` objects in `pipeline.py`:
+For maximum throughput, use a fast model for bulk triage (Phase 1) and a more capable model for reasoning phases:
 
 ```python
-def build_llm_clients() -> tuple[LLMClient, LLMClient]:
-    base_url = os.environ.get("LLM_BASE_URL", "...")
-    api_key = os.environ.get("LLM_API_KEY", "")
-
-    fast_model = os.environ.get("LLM_FAST_MODEL", "gemma-3-4b-it")
-    smart_model = os.environ.get("LLM_SMART_MODEL", "gemma-4-31b-it-q8_0")
-
-    return (
-        LLMClient(base_url, api_key, fast_model),   # Phase 1
-        LLMClient(base_url, api_key, smart_model),  # Phases 2–5
-    )
-
-# In run_pipeline():
-fast_llm, smart_llm = build_llm_clients()
+# pipeline.py
+fast_llm  = LLMClient(base_url, api_key, os.environ.get("LLM_FAST_MODEL",  "qwen2.5-coder-7b"))
+smart_llm = LLMClient(base_url, api_key, os.environ.get("LLM_SMART_MODEL", "qwen2.5-coder-32b"))
 
 agent1 = TriageAgent(fast_llm, str(output_dir))
 agent2 = TaintSpecAgent(smart_llm, str(output_dir))
-...
+# ... Phase 3-5 use smart_llm
 ```
 
 ---
 
-## Extending the static sanitizer list (Phase 4)
+## Tuning the VerifierAgent for precision vs cost
 
-The list of strong sanitizers checked in the static trace is defined in `agents/exploit.py`:
+The VerifierAgent's self-consistency setting trades cost for precision:
 
+| `MOSEC_VERIFIER_N` | Cost | Precision | Use case |
+|---|---|---|---|
+| `1` (default) | 1× | Baseline | Development, CI, large repos |
+| `3` | ~2.5× | +15-20% F1 | Pre-release audits, critical components |
+
+Set via environment variable:
+
+```bash
+MOSEC_VERIFIER_N=3 python pipeline.py --repo-path /path/to/repo
+```
+
+At N=3, the three independent Propose-Falsify-Decide cycles run with `temperature=0.1` for the Propose stage to generate variation, then take a majority vote.
+
+---
+
+## Extending taint sources and sinks
+
+Add sources and sinks directly to `utils/ast_extractor.py` in the appropriate dict:
+
+```python
+# Python sources — add your framework
+_PYTHON_SOURCES["myframework"] = {
+    "get_request_param", "get_cookie", "form_data.get",
+}
+
+# Python sinks for a new CWE
+_PYTHON_SINKS_BY_CWE["CWE-611"] = [
+    ("etree.parse", "call"),
+    ("lxml.etree.parse", "call"),
+    ("xml.etree.ElementTree.parse", "call"),
+]
+```
+
+Changes here affect both the candidate extraction in Phase 2 (guiding the LLM) and the CFG BFS in Phase 4 (ground-truth taint tracking).
+
+---
+
+## Extending the sanitizer list (Phase 4)
+
+The lexical sanitizer check in `agents/exploit.py` uses a pattern list in `_lexical_trace()`. Unlike the old implementation (which searched anywhere in a ±30-line window), the current implementation only fires when a sanitizer pattern appears **on the same line as the sink**. This means the list can be more aggressive without causing false kills.
+
+Existing patterns:
 ```python
 strong_sanitizers = [
     r"\bparameterize\b",
-    r"\bsanitize\b",
     r"\bprepare\b",
     r"\bescape_string\b",
-    r"\bhtml\.escape\b",
-    r"\bmarkupsafe\.escape\b",
-    r"\bbleach\.clean\b",
-    r"\bDjango.*safe\b",
+    r"html\.escape\b",
+    r"markupsafe\.escape\b",
+    r"bleach\.clean\b",
+    r"django\.utils\.html\b",
 ]
 ```
 
-Add patterns here for any framework-specific sanitizers relevant to your codebase. Patterns are Python regex and are searched case-insensitively in a ±30 line window around the finding.
-
-For example, to add Django ORM protection:
-
+To add framework-specific sanitizers:
 ```python
 strong_sanitizers += [
-    r"\.filter\(",       # Django ORM parameterised filter
-    r"\.exclude\(",
-    r"Q\(",              # Django Q objects (parameterised)
-    r"django\.db\.models",
+    r"DOMPurify\.sanitize\(",     # JavaScript DOMPurify
+    r"sanitize_html\(",           # Ruby sanitize_html gem
+    r"ActionController::Base#sanitize",  # Rails
 ]
 ```
-
----
-
-## Customising the CVSS fallback defaults
-
-Edit `_DEFAULT_METRICS` in `agents/reporter.py`:
-
-```python
-_DEFAULT_METRICS = CVSSMetrics(
-    attack_vector="N",        # Network
-    attack_complexity="L",    # Low
-    privileges_required="N",  # None
-    user_interaction="N",     # None
-    scope="U",                # Unchanged
-    confidentiality="L",      # Low
-    integrity="L",            # Low
-    availability="N",         # None
-)
-```
-
-The current defaults produce CVSS 6.5 (Medium). If your environment audits internal services where network access requires VPN, consider setting `attack_vector="A"` (Adjacent) for the default, which produces a lower score and reduces alert fatigue.
 
 ---
 
 ## Adding a new output format
 
-The reporter currently writes SARIF and Markdown. Adding a new format (e.g. JSON export for Defect Dojo, HTML report, Jira ticket creation) follows the same pattern:
+To export results to Defect Dojo, add a method to `agents/reporter.py` and call it from `run()`:
 
 ```python
-# In agents/reporter.py, add a new method:
-
 def _write_defect_dojo(self, entries: list[ReportEntry], path: str) -> None:
-    """Export in Defect Dojo generic findings JSON format."""
     findings = []
     for e in entries:
         findings.append({
@@ -306,15 +245,47 @@ def _write_defect_dojo(self, entries: list[ReportEntry], path: str) -> None:
             "file_path": e.file,
             "line": e.line,
             "mitigation": e.remediation,
-            "references": e.cvss.vector_string,
             "active": True,
             "verified": True,
             "false_p": False,
-            "duplicate": False,
         })
-    output = {"findings": findings}
-    Path(path).write_text(json.dumps(output, indent=2), encoding="utf-8")
+    Path(path).write_text(json.dumps({"findings": findings}, indent=2), encoding="utf-8")
 
-# Then call it from run():
+# In run():
 self._write_defect_dojo(entries, str(self.output_dir / "defect_dojo.json"))
 ```
+
+---
+
+## Adding benchmark cases
+
+Add a pair of files to `benchmarks/cases/`:
+
+```
+benchmarks/cases/
+  tp_my_vuln.py               # the vulnerable code snippet
+  tp_my_vuln.expected.json    # ground truth
+```
+
+Expected JSON format:
+```json
+{
+  "label": "TP",
+  "description": "Flask XSS via unescaped query parameter",
+  "cwe": "CWE-79",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "make_response",
+  "exploitability": "high",
+  "difficulty": "normal",
+  "notes": "PoC: ?name=<script>alert(1)</script>"
+}
+```
+
+| Field | Values | Meaning |
+|---|---|---|
+| `label` | `TP`, `FP`, `TN` | Ground truth label |
+| `should_validate` | `true`/`false` | Whether the pipeline should produce a validated vuln |
+| `difficulty` | `normal`, `hard` | Reported in per-difficulty breakdown |
+
+Cases with `difficulty: "hard"` (inter-procedural, sanitizer bypass) are expected to fail until Lot E (global taint graph) is implemented.

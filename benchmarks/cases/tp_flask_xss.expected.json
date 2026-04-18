@@ -1,0 +1,10 @@
+{
+  "label": "TP",
+  "description": "Flask XSS: request.args.get('name') interpolated directly into HTML response",
+  "cwe": "CWE-79",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "make_response",
+  "exploitability": "high",
+  "notes": "Classic reflected XSS. PoC: ?name=<script>alert(1)</script>"
+}

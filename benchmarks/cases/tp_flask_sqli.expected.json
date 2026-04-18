@@ -1,0 +1,10 @@
+{
+  "label": "TP",
+  "description": "SQL injection: request.args.get('id') concatenated into raw SQL query",
+  "cwe": "CWE-89",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "cursor.execute",
+  "exploitability": "high",
+  "notes": "Classic SQLi. PoC: ?id=1 OR 1=1--"
+}

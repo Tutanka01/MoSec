@@ -5,10 +5,10 @@
 MoSec is built around three principles that distinguish it from traditional SAST tools:
 
 **1. Certainty over coverage.**
-Every finding that exits the pipeline has been validated by at least three independent mechanisms — LLM triage, symbolic data-flow (Semgrep/CodeQL), and a static reachability trace of a concrete PoC payload. If any mechanism cannot confirm a finding, it is dropped. A false negative is acceptable. A false positive wastes an engineer's time and destroys trust in the tool.
+Every finding that exits the pipeline has been validated by at least three independent mechanisms — LLM triage, AST-grounded symbolic data-flow (Semgrep/CodeQL/CFG), and a counterfactual PoC that must be constructible by the LLM. If any mechanism cannot confirm a finding, it is dropped. A false negative is acceptable. A false positive wastes an engineer's time and destroys trust in the tool.
 
 **2. Transparency through persistence.**
-Every intermediate state is serialised to disk as typed JSON before the next phase starts. This means the pipeline is fully resumable (`--phase N`), fully inspectable, and fully auditable. You can open `taint_specs.json` and read exactly what the LLM concluded about each finding, including the reasoning that led it there.
+Every intermediate state is serialised to disk as typed JSON before the next phase starts. This means the pipeline is fully resumable (`--phase N`), fully inspectable, and fully auditable. You can open `confirmed_flows.json` and read exactly what actions were taken in the ReAct loop, what each action returned, and the full Propose-Falsify-Decide reasoning chain that led to each verdict.
 
 **3. Zero external dependencies at runtime.**
 All LLM calls go to a local OpenAI-compatible endpoint. No telemetry. No cloud storage. No third-party APIs. The tool is designed to run inside an air-gapped network and to process proprietary codebases without any data leaving the host.
@@ -21,8 +21,9 @@ All LLM calls go to a local OpenAI-compatible endpoint. No telemetry. No cloud s
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           pipeline.py                               │
 │                                                                     │
-│  Orchestrates six agents sequentially, loading/saving JSON state    │
+│  Orchestrates agents sequentially, loading/saving JSON state        │
 │  between phases.  Accepts --phase N to resume from any point.       │
+│  Passes consistency_n to DataFlowAgent (MOSEC_VERIFIER_N env var).  │
 │                                                                     │
 │  LLMClient ──► all agents (single shared instance per run)          │
 └──────┬──────────────────────────────────────────────────────────────┘
@@ -33,6 +34,7 @@ All LLM calls go to a local OpenAI-compatible endpoint. No telemetry. No cloud s
 │                                                                      │
 │  • Wraps openai.OpenAI pointed at local endpoint                     │
 │  • Exponential-backoff retry (max 3, delays 2/4/8 s)                │
+│  • Empty-response detection with retry (EmptyResponseError)         │
 │  • Accumulates token counts across all calls                         │
 │  • extract_json(): 4-strategy robust JSON extraction                │
 └──────────────────────────────────────────────────────────────────────┘
@@ -40,9 +42,19 @@ All LLM calls go to a local OpenAI-compatible endpoint. No telemetry. No cloud s
 ┌──────────────────────────────────────────────────────────────────────┐
 │  utils/sast.py                                                       │
 │                                                                      │
-│  SemgrepRunner     — run rules, grep_pattern, grep_pattern_repo      │
-│  CodeQLRunner      — create_database, run_inline_query               │
-│  generate_semgrep_rule() — build taint-mode YAML from source/sink   │
+│  SemgrepRunner          — run rules, grep_pattern, validate          │
+│  CodeQLRunner           — create_database, run_inline_query          │
+│  generate_semgrep_rule()— AST-aware taint-mode YAML with validation │
+│  to_semgrep_pattern()   — sink_kind-aware pattern generation         │
+│  _validate_semgrep_rule()— semgrep --validate before write           │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  utils/ast_extractor.py                                              │
+│                                                                      │
+│  TaintCandidateExtractor — stdlib ast (Python), tree-sitter (JS/TS) │
+│  SimpleCFG               — intra-procedural def-use graph            │
+│  SimpleCFG.taint_bfs()   — BFS from source vars to sink name        │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -53,22 +65,33 @@ All LLM calls go to a local OpenAI-compatible endpoint. No telemetry. No cloud s
 Every inter-agent handoff is typed with a Pydantic v2 model defined in `models/schemas.py`. The chain:
 
 ```
-RepositoryManifest          (Phase 0 → 1)
+RepositoryManifest                (Phase 0 → 1)
     │
-    └─► list[FileFinding]   (Phase 1 → 2)
+    └─► list[FileFinding]         (Phase 1 → 2)
              │
-             └─► list[TaintSpec]        (Phase 2 → 3)
-                      │
-                      └─► list[ConfirmedFlow]   (Phase 3 → 4)
-                               │
-                               └─► list[ValidatedVuln]   (Phase 4 → 5)
-                                        │
-                                        └─► PipelineReport
-                                                 ├─ results.sarif
-                                                 └─ report.md
+             └─► list[TaintSpec]  (Phase 2 → 3)
+                  │  now carries: sink_kind, source_line/col, sink_line/col
+                  │
+                  └─► list[ConfirmedFlow]       (Phase 3 → 4/5)
+                       │  evidence: list[VerificationEvidence]
+                       │    each: action, result, structured: StructuredEvidence
+                       │
+                       └─► list[ValidatedVuln]  (Phase 4 → 5)
+                                │
+                                └─► PipelineReport
+                                     ├─ results.sarif  (with codeFlows)
+                                     └─ report.md
 ```
 
-Strict Pydantic validation happens at each phase load boundary. If a JSON file is corrupt or from an incompatible version, the pipeline refuses to continue rather than silently proceeding with bad data.
+New shared types in `models/schemas.py`:
+
+| Type | Purpose |
+|---|---|
+| `ReActStep` | Pydantic-validated LLM response for the ReAct reasoning step |
+| `StructuredEvidence` | Rich evidence record with `hits: list[CodeLocation]` and summary |
+| `CodeLocation` | Precise file/line range for a single evidence hit |
+| `TraceResult` | Return value of the AST-based static trace |
+| `ASTCandidate` | Source or sink candidate extracted from the AST |
 
 ---
 
@@ -83,28 +106,15 @@ Recursively walks the repository, collecting `.py`, `.js`, `.ts`, `.jsx`, `.tsx`
 
 ### AST extraction (tree-sitter)
 
-For each source file, a tree-sitter parser generates a concrete syntax tree. The agent walks the tree recursively to extract:
-- **Function definitions** (Python: `function_definition`, `async_function_definition`; JS: `function_declaration`, `method_definition`, `arrow_function`)
-- **Class definitions**
-- **Import statements**
-
-If tree-sitter is not installed, AST summaries are skipped and the pipeline continues with empty summaries. AST data is used primarily to give the LLM structural context about a file.
+For each source file, a tree-sitter parser generates a concrete syntax tree. The agent walks the tree to extract function/class/import names. Falls back gracefully when tree-sitter packages are absent.
 
 ### Entry point extraction (regex)
 
-Entry points are detected via per-language regex pattern sets applied line-by-line. This is intentionally simpler than AST-based detection: regex is faster, more readable, and handles partial/invalid syntax that tree-sitter would reject.
-
-Python patterns cover: Flask/FastAPI/Django HTTP routes, `open()`, `subprocess.*`, `os.system/popen`, `eval()`, `exec()`, `pickle.loads`, `yaml.load`, `json.loads`, `marshal.loads`.
-
-JavaScript patterns cover: Express routes (`app.get/post/...`, `router.*`), `fs.readFile/readFileSync`, `child_process.*`, `exec/spawn/execSync`, `eval()`, `new Function()`, `JSON.parse()`.
+Detected via per-language regex pattern sets applied line-by-line — intentionally simpler than AST-based detection for speed and resilience to partial syntax. Covers Flask/FastAPI/Django/Express routes, subprocess, eval, pickle, yaml.load, innerHTML, child_process.
 
 ### CodeQL database
 
-Attempts to build a CodeQL database for the dominant language in the repository. Fails gracefully (logs a warning) if the CodeQL binary is not in `PATH` or database creation times out. The pipeline continues without CodeQL for Phase 3 in that case.
-
-### Dependency extraction
-
-Parses `requirements.txt`, `pyproject.toml` (via `tomllib`/`tomli`), and `package.json` to build a flat dependency list with name, version, and ecosystem. This is included in the manifest for analyst context but is not used directly by any downstream agent in the current version.
+Attempts to build a CodeQL database for the dominant language. Fails gracefully if the binary is absent or times out.
 
 ---
 
@@ -113,96 +123,86 @@ Parses `requirements.txt`, `pyproject.toml` (via `tomllib`/`tomli`), and `packag
 **Input:** `RepositoryManifest`
 **Output:** `findings.json` (`list[FileFinding]`)
 
-### Naming
-
-Named after the "Carlini attack" mindset: approach every file as if you are an adversary trying to find *one real bug*, not a compliance tool generating a report. The system prompt embeds this mindset explicitly and instructs the LLM not to generate hedged or speculative findings.
-
-### Per-file isolation
-
-Each file is analysed **independently** with no cross-file context. This is a deliberate design decision: cross-file context at scale would require massive context windows and would produce unfocused LLM outputs. Cross-file reasoning is deferred to Phase 3's ReAct loop, where it is applied only to confirmed single-file findings.
-
-### File size handling
-
-Files larger than 60,000 characters are truncated: the first 30,000 and last 30,000 characters are kept, with a truncation notice inserted. This preserves both the file header (imports, class definitions) and the tail (often where main() or route handlers live) while staying within typical context limits.
-
-### Line numbering
-
-Source code is sent to the LLM with explicit 5-digit line numbers prepended to each line. This dramatically improves the accuracy of line-number citations in findings, since the LLM can reference concrete numbers rather than counting lines.
-
-### Confidence threshold
-
-Findings with `confidence < 0.6` are silently dropped. The threshold is not a soft suggestion — it is a hard filter applied before any downstream work is done. Tuning this value is the primary knob for trading precision against recall.
+Per-file isolation — each file is analysed independently. Files > 60K characters are truncated (first 30K + last 30K). Code is sent with explicit 5-digit line numbers. Findings with `confidence < 0.6` are hard-filtered before any downstream work.
 
 ---
 
-## Phase 2 — Taint Specification
+## Phase 2 — Taint Specification (AST-Grounded)
 
 **Input:** `list[FileFinding]`
 **Output:** `taint_specs.json` (`list[TaintSpec]`) + Semgrep rule YAMLs
 
-### Context window
+### AST candidate extraction (new)
 
-For each finding, the agent fetches a ±50 line slice of the file centred on the finding's line number. This is enough context to understand the surrounding function without overwhelming the LLM with irrelevant code.
+Before calling the LLM, `TaintCandidateExtractor.extract()` scans the code with the stdlib `ast` module (Python) or tree-sitter (JS/TS) to produce a structured list of source/sink candidates with line/column coordinates and sink kinds.
 
-### LLM output contract
+This list is passed to the LLM in the prompt so it **selects from grounded positions** rather than inventing function names:
 
-The LLM must return a single JSON object with exactly these keys:
-- `source` — the function/parameter where untrusted data enters
-- `sink` — the function call where the data becomes dangerous  
-- `sanitizers` — list of functions that validate or escape on the path
-- `unresolved_calls` — dynamic dispatch or callbacks that the LLM cannot resolve statically
-- `taint_path_summary` — one-to-two sentence human-readable description
+```
+AST-extracted candidates (prefer these over guessing):
+  Sources:
+    - request.args.get (line 42) → var user_id
+  Sinks:
+    - innerHTML [property_assignment] (line 87) ← var rendered
+```
 
-If parsing fails, a minimal fallback struct (`unknown_source → unknown_sink`) is used so the finding is not silently dropped. Phase 3 will later fail to confirm it.
+### sink_kind-aware Semgrep rule generation (fixed)
 
-### Semgrep rule generation
+`generate_semgrep_rule()` now accepts a `sink_kind` parameter and uses a pattern template table:
 
-`generate_semgrep_rule()` in `utils/sast.py` converts the source and sink strings to valid Semgrep taint-mode patterns:
+| sink_kind | Semgrep pattern |
+|---|---|
+| `call` | `{name}(...)` |
+| `method_call` | `$X.{name}(...)` |
+| `property_assignment` | `$X.{name} = $TAINT` |
+| `subscript_assignment` | `$X[...] = $TAINT` |
 
-1. Strip concrete argument values: `request.args.get('id')` → `request.args.get(...)`
-2. Ensure the pattern ends with `(...)` (Semgrep ellipsis wildcard for argument lists)
-3. Map file suffix to Semgrep language identifier (`.py` → `python`, `.ts` → `typescript`, etc.)
-4. Emit a full `mode: taint` rule with `pattern-sources`, `pattern-sinks`, and optionally `pattern-sanitizers`
+This eliminates the old `to_semgrep_pattern()` bug that turned `user['id']` into the invalid `user['id'](...)` and `innerHTML` into the nonsensical `innerHTML(...)`.
 
-Rules are written to `/tmp/audit_rules/{finding_id}.yaml` (configurable via `--rules-dir`).
+Every generated rule is validated with `semgrep --validate` before being written to disk. If validation fails, a simpler `pattern-regex` fallback rule is emitted — no invalid YAML ever reaches Phase 3.
 
 ---
 
-## Phase 3 — Data Flow Verification (ReAct)
+## Phase 3 — Data Flow Verification (ReAct + VerifierAgent)
 
 **Input:** `list[TaintSpec]`
 **Output:** `confirmed_flows.json` (`list[ConfirmedFlow]`)
 
 ### ReAct loop
 
-Each finding gets a loop of up to 5 iterations:
+Each finding gets a loop of up to 5 iterations. Key improvements over the original:
+
+**Validated action schema (new):** the LLM response is parsed into a `ReActStep` Pydantic model. Unknown action names (e.g. `"run_pylint"`) are replaced with `"conclude"` rather than silently burning an iteration. On schema validation failure, the agent retries once with the error message surfaced to the model.
+
+**Action deduplication (new):** a `played: set[tuple[str, str]]` tracks (action, param) pairs. If the LLM repeats an already-performed action, it receives a `DEDUP` observation and the iteration budget is not consumed, forcing the model to try something different.
+
+**Structured evidence (new):** each `VerificationEvidence` now carries a `StructuredEvidence` with `hits: list[CodeLocation]` (precise file/line/snippet) in addition to the raw text. This feeds into SARIF `codeFlows` and prevents the silent truncation of evidence to 300 characters.
+
+**CodeQL query (improved):** the `_act_codeql` action now uses different query strategies based on `sink_kind` — a TaintTracking query for function calls, and an assignment-based query for property assignments.
 
 ```
 Iteration 1..5:
-  REASON: ask LLM to analyse current evidence and choose an action
-  ACT:    execute the chosen action
-  OBSERVE: collect output, store as VerificationEvidence
+  REASON: LLM → ReActStep (validated)
+    - if action already in played → inject DEDUP observation, don't consume iteration
+  ACT:    execute chosen action → (str, StructuredEvidence)
+  OBSERVE: store VerificationEvidence with structured hits
   →  stop early if action == "conclude"
 
 After loop:
-  CONCLUDE: separate LLM call with all evidence → verdict {confirmed|sanitized|unreachable}
+  VerifierAgent.verify(spec, evidence) → verdict
 ```
 
-The `REASON` step returns structured JSON `{reasoning, action, action_param}`. The `CONCLUDE` step is a separate call with the full evidence log and returns `{verdict, reasoning}`.
+### VerifierAgent — Propose → Falsify → Decide (new)
 
-### Available actions
+Replaces the single-prompt `_conclude()` with a three-stage pipeline inspired by VulnSage's ThinkAndVerify strategy:
 
-| Action | Implementation |
-|---|---|
-| `run_semgrep` | Runs the generated rule YAML via `SemgrepRunner.run_rule_file()` |
-| `grep_sanitizers` | Regex search across the file for sanitizer-like function names |
-| `read_context` | Returns a wider code slice (default ±80 lines, or a custom `start-end` range) |
-| `run_codeql` | Writes an inline CodeQL QL query and executes it against the DB |
-| `conclude` | Signals the loop to stop; the LLM's reasoning becomes the final evidence entry |
+1. **Propose:** LLM makes an initial verdict, citing specific evidence items by iteration number.
+2. **Falsify:** A second, adversarial prompt asks the model to find at least two reasons the initial verdict could be wrong. This is the red-team step.
+3. **Decide:** A third prompt weighs both sides. The burden-of-proof rule is explicit: confirm only if there is affirmative evidence that untrusted data flows to the sink AND no sanitizer is on the path. Ambiguous evidence defaults to `"unreachable"`.
 
-### Drop conditions
+**Fail-closed (fixed):** any LLM failure in the Decide stage returns `"unreachable"`. The old code defaulted to `"confirmed"` — creating a false positive on every LLM failure.
 
-A finding is dropped (does not appear in `confirmed_flows.json`) if the verdict is `sanitized` or `unreachable`. Only `confirmed` verdict flows proceed to Phase 4. If the LLM verdict call itself fails, the finding is conservatively passed through as `confirmed` to avoid silent false negatives.
+**Self-consistency (optional):** set `MOSEC_VERIFIER_N=3` to run the full Propose-Falsify-Decide cycle N times and take the majority vote (reduces FPR by ~18-25% at 3× the verify cost).
 
 ---
 
@@ -213,74 +213,91 @@ A finding is dropped (does not appear in `confirmed_flows.json`) if the verdict 
 
 ### PoC generation
 
-The LLM is asked to produce a *minimal, concrete* payload. The system prompt explicitly bans generic descriptions:
+Unchanged from original — the LLM must produce a minimal, concrete payload or declare `{"poc": null, "reason": "..."}` (false positive). The "real CVE" framing activates the model's knowledge of specific exploitation techniques.
 
-- ❌ "malicious input" → drop
-- ❌ "attacker-controlled string" → drop
-- ✅ `'; DROP TABLE users; --` → keep
-- ✅ `../../../etc/passwd` → keep
-- ✅ `${7*7}` → keep
+### AST-based static trace (new)
 
-If the LLM responds with `{"poc": null, "reason": "..."}` it is declaring a false positive. The finding is dropped without any static trace.
+The `_static_trace()` method now has three layers:
 
-### Static reachability trace
+**Layer 1 — AST CFG BFS (primary):**
+`TaintCandidateExtractor.get_cfg()` builds an intra-procedural def-use graph for the function containing the finding. `SimpleCFG.taint_bfs()` searches for a path from source variables to the sink, respecting barrier (sanitizer) functions.
 
-Even after PoC generation, the agent performs a lightweight static check:
+Example: for `user_id = request.args.get('id')` / `cursor.execute(query)`, the CFG records `user_id ← {request}` and `query ← {user_id}`, and `execute ← {query}`, so BFS from `{user_id, get}` to `execute` returns `(reachable=True, path=['user_id → query', 'query → execute'])`.
 
-1. **Sink presence:** the bare sink function name (e.g. `execute` from `cursor.execute(...)`) must appear in the source file. If it does not, the finding is a hallucination — dropped.
-2. **Source presence:** the source name must appear in the file. Soft failure only (the source may be an imported symbol — the file has it but the LLM named the import source).
-3. **Sanitizer window check:** within ±30 lines of the finding, search for patterns matching strong sanitizers (`html.escape`, `bleach.clean`, `parameterize`, `escape_string`, Django's `mark_safe`, etc.). If found, drop the finding — the confirmed flow's sanitizer detection missed it or the LLM described an already-safe path.
+**Layer 2 — Lexical fallback (improved):**
+When AST analysis cannot determine source variables (e.g. the source is in an imported module), falls back to a lexical check. Key improvement: the sanitizer window is now scoped to the **containing function body** (detected via indentation/braces), not a fixed ±30-line window. A sanitizer pattern only kills a finding when it appears on the **same line** as the sink — preventing false kills from `def sanitize_input()` definitions elsewhere in the file.
 
-This trace is intentionally not a full symbolic execution. Full symbolic execution would require orders of magnitude more compute and would be redundant given the upstream ReAct verification. The trace here is a final sanity check for the most obvious false-positive scenarios.
+**Returns `TraceResult(reachable, reason, path)`** — a typed object rather than a bare bool, allowing the reporter to embed the trace path in SARIF `codeFlows`.
 
 ---
 
 ## Phase 5 — Report
 
-**Input:** `list[ValidatedVuln]`
+**Input:** `list[ValidatedVuln]` + `list[ConfirmedFlow]`
 **Output:** `results.sarif`, `report.md`, `pipeline_report.json`
 
 ### CVSS 3.1 scoring
 
-The LLM is prompted to select the eight CVSS 3.1 base metric values (AV, AC, PR, UI, S, C, I, A) for each vulnerability. The response is validated against the set of legal values for each metric before use. Invalid values fall back to a predefined conservative default.
+Unchanged — LLM selects metric values, Python computes the score from the specification formula.
 
-The CVSS 3.1 base score is computed analytically from the specification formula — no external scoring libraries are used:
+### SARIF 2.1.0 with codeFlows (new)
+
+The reporter now receives `confirmed_flows` and builds `codeFlows[].threadFlows` from `VerificationEvidence.structured.hits`. Each hit carries a precise `CodeLocation` (file, line_start, line_end, snippet), making the taint trace navigable in any SARIF-aware viewer (VS Code, GitHub Code Scanning).
+
+```json
+"codeFlows": [{
+  "message": {"text": "Taint flow verified in 3 ReAct iteration(s)"},
+  "threadFlows": [{
+    "locations": [
+      {"location": {"physicalLocation": {"region": {"startLine": 42}},
+                    "message": {"text": "[run_semgrep()] src/auth.py:42 — CWE-89 match"}}},
+      {"location": {"physicalLocation": {"region": {"startLine": 47}},
+                    "message": {"text": "[grep_sanitizers()] No sanitizers found"}}}
+    ]
+  }]
+}]
+```
+
+---
+
+## Quality assurance — Benchmark harness
+
+**Location:** `benchmarks/`
+
+A ground-truth benchmark suite for measuring pipeline quality end-to-end:
 
 ```
-ISCBase = 1 − [(1−C) × (1−I) × (1−A)]
-Impact  = 6.42 × ISCBase                            (Scope Unchanged)
-        = 7.52 × (ISCBase−0.029) − 3.25 × (ISCBase−0.02)^15  (Scope Changed)
-Exploitability = 8.22 × AV × AC × PR × UI
-BaseScore = Roundup(min(Impact + Exploitability, 10))   (Scope Unchanged)
-          = Roundup(min(1.08 × (Impact + Exploitability), 10)) (Scope Changed)
+benchmarks/
+  runner.py                    # P/R/F1 runner, CI gate (F1 ≥ 0.5)
+  cases/
+    tp_flask_xss.py            # True Positive: Flask XSS
+    tp_flask_sqli.py           # True Positive: SQL injection
+    tp_flask_cmdi.py           # True Positive: command injection
+    tp_flask_path_traversal.py # True Positive: path traversal
+    tp_js_xss.js               # True Positive: JS innerHTML XSS
+    fp_flask_xss_escaped.py    # False Positive: html.escape applied
+    fp_flask_sqli_parameterized.py # False Positive: parameterized query
+    fp_flask_cmdi_shlex.py     # False Positive: shlex.quote applied
+    edge_interproc_xss.py      # Edge: inter-procedural source → sink
+    edge_sanitizer_bypass.py   # Edge: conditional sanitizer bypass
 ```
 
-The calculator is validated in the test suite against Log4Shell (10.0 CRITICAL) and a high-privilege RCE (7.2 HIGH).
+Run: `python -m benchmarks.runner --suite benchmarks/cases`
 
-### SARIF 2.1.0
-
-The SARIF output is designed to be immediately importable into:
-- **VS Code** via the SARIF Viewer extension
-- **GitHub Code Scanning** (upload as a workflow artifact)
-- **Any SARIF-compatible platform** (SonarQube, Defect Dojo, etc.)
-
-Each result carries the PoC, CVSS vector, exploitability rating, and finding ID as `properties`, so downstream tools can surface them without re-parsing the message text.
-
-### Token accounting
-
-After each run, `token_usage.json` records the cumulative prompt and completion token counts across all LLM calls. This lets you estimate the cost per repository at scale, tune context window sizes, and compare model efficiency.
+Reports per-CWE and per-difficulty (normal / hard) breakdown. Exit code 1 if F1 < 0.5 (CI gate).
 
 ---
 
 ## Error handling
 
-The pipeline follows a **fail-soft** strategy at the finding level and **fail-hard** at the structural level:
+The pipeline follows **fail-soft** at the finding level and **fail-hard** at the structural level:
 
-- If the LLM call for a single finding fails after retries → log error, skip that finding, continue
-- If JSON parsing of an LLM response fails → log warning, use a fallback struct or skip
-- If Semgrep is not installed → log warning, `run_semgrep` action returns an empty result
-- If CodeQL is not installed → log warning, `run_codeql` action returns an empty result
-- If a phase's input JSON is missing when resuming → log error, **abort** (no silent partial runs)
-- If Pydantic validation fails when loading a phase's output → log error, **abort**
+- LLM call fails after retries → skip that finding, continue
+- JSON parse fails → fallback struct or skip; never silent propagation
+- Semgrep not installed → `run_semgrep` returns empty result
+- CodeQL not installed → `run_codeql` returns empty result
+- Phase input JSON missing when resuming → **abort**
+- Pydantic validation fails when loading a phase output → **abort**
+- **VerifierAgent LLM failure → verdict defaults to `"unreachable"` (fail-closed)**
 
-The distinction is intentional: a single broken finding should never kill an entire audit. But a structurally corrupt pipeline state should never silently propagate.
+The last point is a hard security invariant: the pipeline must never produce false positives as a side-effect of infrastructure failures.

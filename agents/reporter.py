@@ -19,9 +19,11 @@ from typing import Optional
 from models.schemas import (
     CVSSMetrics,
     CVSSScore,
+    ConfirmedFlow,
     PipelineReport,
     ReportEntry,
     ValidatedVuln,
+    VerificationEvidence,
     calculate_cvss31,
 )
 from utils.llm import LLMClient, LLMError
@@ -104,7 +106,11 @@ class ReporterAgent:
     # Public API
     # ------------------------------------------------------------------
 
-    def run(self, vulns: list[ValidatedVuln]) -> PipelineReport:
+    def run(
+        self,
+        vulns: list[ValidatedVuln],
+        confirmed_flows: list[ConfirmedFlow] | None = None,
+    ) -> PipelineReport:
         entries: list[ReportEntry] = []
 
         for vuln in vulns:
@@ -129,7 +135,7 @@ class ReporterAgent:
         sarif_path = str(self.output_dir / "results.sarif")
         md_path = str(self.output_dir / "report.md")
 
-        self._write_sarif(entries, sarif_path)
+        self._write_sarif(entries, sarif_path, confirmed_flows=confirmed_flows)
         self._write_markdown(entries, md_path)
 
         report = PipelineReport(
@@ -247,7 +253,18 @@ class ReporterAgent:
     # SARIF 2.1.0 output
     # ------------------------------------------------------------------
 
-    def _write_sarif(self, entries: list[ReportEntry], path: str) -> None:
+    def _write_sarif(
+        self,
+        entries: list[ReportEntry],
+        path: str,
+        confirmed_flows: list[ConfirmedFlow] | None = None,
+    ) -> None:
+        # Build a lookup {finding_id → ConfirmedFlow} for codeFlows enrichment (Lot D)
+        flow_map: dict[str, ConfirmedFlow] = {}
+        if confirmed_flows:
+            for cf in confirmed_flows:
+                flow_map[cf.finding_id] = cf
+
         rules = []
         seen_rules: set[str] = set()
         results = []
@@ -274,7 +291,10 @@ class ReporterAgent:
             # Normalise path for SARIF URIs (forward slashes, no leading /)
             uri = e.file.replace("\\", "/").lstrip("/")
 
-            results.append({
+            # Build codeFlows from StructuredEvidence when available (Lot D)
+            code_flows = _build_code_flows(flow_map.get(e.finding_id), uri)
+
+            sarif_result: dict = {
                 "ruleId": rule_id,
                 "level": _SEVERITY_LEVEL.get(e.cvss.severity, "warning"),
                 "message": {
@@ -304,7 +324,11 @@ class ReporterAgent:
                     "exploitability": e.exploitability,
                     "poc": e.poc,
                 },
-            })
+            }
+            if code_flows:
+                sarif_result["codeFlows"] = code_flows
+
+            results.append(sarif_result)
 
         sarif_doc = {
             "$schema": _SARIF_SCHEMA,
@@ -413,3 +437,74 @@ def _severity_badge(severity: str) -> str:
         "NONE": "⚪ NONE",
     }
     return badges.get(severity, severity)
+
+
+def _build_code_flows(
+    flow: ConfirmedFlow | None, default_uri: str
+) -> list[dict] | None:
+    """
+    Build a SARIF 2.1.0 `codeFlows` array from the VerificationEvidence (Lot D).
+
+    Uses StructuredEvidence.hits (CodeLocation) when available — these carry
+    precise file/line ranges produced by Semgrep, grep, or CodeQL actions.
+    Falls back to the raw `result` text when no structured evidence exists.
+    """
+    if flow is None or not flow.verification_evidence:
+        return None
+
+    thread_flow_locations: list[dict] = []
+
+    for ev in flow.verification_evidence:
+        if ev.action.startswith("DEDUP:"):
+            continue
+
+        # Prefer structured evidence hits (accurate line numbers)
+        if ev.structured and ev.structured.hits:
+            for hit in ev.structured.hits[:3]:
+                hit_uri = hit.file.replace("\\", "/").lstrip("/") if hit.file else default_uri
+                loc: dict = {
+                    "location": {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": hit_uri,
+                                "uriBaseId": "%SRCROOT%",
+                            },
+                            "region": {
+                                "startLine": max(1, hit.line_start),
+                                "endLine": max(1, hit.line_end),
+                            },
+                        },
+                        "message": {"text": f"[{ev.action}] {hit.snippet[:200]}"},
+                    }
+                }
+                thread_flow_locations.append(loc)
+        else:
+            # Fallback: record the action as a logical location (no line number)
+            thread_flow_locations.append({
+                "location": {
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": default_uri,
+                            "uriBaseId": "%SRCROOT%",
+                        },
+                        "region": {"startLine": max(1, flow.line)},
+                    },
+                    "message": {
+                        "text": f"[iter {ev.iteration}] {ev.action}: {ev.result[:200]}"
+                    },
+                }
+            })
+
+    if not thread_flow_locations:
+        return None
+
+    return [
+        {
+            "message": {"text": f"Taint flow verified in {flow.verification_iterations} ReAct iteration(s)"},
+            "threadFlows": [
+                {
+                    "locations": thread_flow_locations,
+                }
+            ],
+        }
+    ]

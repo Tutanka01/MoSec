@@ -1,0 +1,10 @@
+{
+  "label": "FP",
+  "description": "XSS properly mitigated: html.escape() applied before interpolation",
+  "cwe": "CWE-79",
+  "should_validate": false,
+  "source_hint": "request.args.get",
+  "sink_hint": "make_response",
+  "sanitizer": "html.escape",
+  "notes": "Pipeline should detect the sanitizer and NOT produce a validated vuln"
+}

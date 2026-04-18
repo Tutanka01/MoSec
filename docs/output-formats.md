@@ -18,32 +18,22 @@ These files are the source of truth for the pipeline. They are typed with Pydant
     "/absolute/path/to/repo/src/auth.py"
   ],
   "entry_points": [
-    {
-      "file": "src/app.py",
-      "line": 12,
-      "type": "http_route",
-      "name": "@app.route('/login', methods=['POST'])"
-    }
+    {"file": "src/app.py", "line": 12, "type": "http_route", "name": "@app.route('/login')"}
   ],
   "dependencies": [
-    { "name": "flask", "version": ">=3.0.0", "ecosystem": "pip" },
-    { "name": "lodash", "version": "^4.17.21", "ecosystem": "npm" }
+    {"name": "flask", "version": ">=3.0.0", "ecosystem": "pip"}
   ],
   "ast_summary": [
     {
       "file": "src/app.py",
-      "functions": ["login", "get_user", "create_session"],
+      "functions": ["login", "get_user"],
       "classes": ["UserController"],
-      "imports": ["from flask import Flask, request", "import sqlite3"]
+      "imports": ["from flask import Flask, request"]
     }
   ],
   "codeql_db_path": "/absolute/path/to/output/codeql_db"
 }
 ```
-
-**`entry_points.type`** values: `http_route`, `file_read`, `subprocess`, `eval`, `deserialization`
-
-**`codeql_db_path`** is `null` if CodeQL is not installed or database creation failed.
 
 ---
 
@@ -56,13 +46,13 @@ These files are the source of truth for the pipeline. They are typed with Pydant
     "file": "/absolute/path/to/repo/src/auth.py",
     "line": 47,
     "cwe": "CWE-89",
-    "description": "User-supplied 'id' parameter concatenated directly into SQL query string.",
+    "description": "User-supplied 'id' parameter concatenated directly into SQL query.",
     "confidence": 0.95
   }
 ]
 ```
 
-Only findings with `confidence ≥ 0.6` appear here. The `finding_id` is a UUID generated at Phase 1 and carried through every subsequent phase — it is the stable identifier for a finding across all outputs.
+Only findings with `confidence ≥ 0.6` appear here. The `finding_id` UUID is stable across all subsequent phases.
 
 ---
 
@@ -78,16 +68,29 @@ Only findings with `confidence ≥ 0.6` appear here. The `finding_id` is a UUID 
     "description": "...",
     "confidence": 0.95,
     "source": "request.args.get('id')",
-    "sink": "cursor.execute(query)",
+    "sink": "cursor.execute",
     "sanitizers": [],
     "unresolved_calls": [],
-    "taint_path_summary": "The 'id' parameter from the HTTP request is assigned to 'user_id', which is concatenated into 'query' and passed to cursor.execute without any sanitisation.",
-    "semgrep_rule_path": "/tmp/audit_rules/3f7a2c1b-....yaml"
+    "taint_path_summary": "The 'id' parameter is assigned to 'user_id', concatenated into 'query', and passed to cursor.execute without sanitisation.",
+    "semgrep_rule_path": "/tmp/audit_rules/3f7a2c1b-....yaml",
+    "sink_kind": "method_call",
+    "source_line": 42,
+    "source_col": 15,
+    "sink_line": 47,
+    "sink_col": 4
   }
 ]
 ```
 
-The `semgrep_rule_path` points to the generated rule YAML. If `--keep-rules` was not passed, this file will have been deleted after the run.
+**New fields (AST grounding):**
+
+| Field | Description |
+|---|---|
+| `sink_kind` | How the sink is used: `call`, `method_call`, `property_assignment`, `subscript_assignment` |
+| `source_line` / `source_col` | AST coordinates of the source expression |
+| `sink_line` / `sink_col` | AST coordinates of the sink expression |
+
+These fields drive the Semgrep pattern template selection and the intra-procedural CFG BFS in Phase 4.
 
 ---
 
@@ -100,10 +103,8 @@ The `semgrep_rule_path` points to the generated rule YAML. If `--keep-rules` was
     "file": "/absolute/path/to/repo/src/auth.py",
     "line": 47,
     "cwe": "CWE-89",
-    "description": "...",
-    "confidence": 0.95,
     "source": "request.args.get('id')",
-    "sink": "cursor.execute(query)",
+    "sink": "cursor.execute",
     "sanitizers": [],
     "taint_path_summary": "...",
     "verification_iterations": 3,
@@ -112,26 +113,48 @@ The `semgrep_rule_path` points to the generated rule YAML. If `--keep-rules` was
         "iteration": 1,
         "action": "run_semgrep()",
         "result": "Semgrep matched 1 location:\n  src/auth.py:47 — CWE-89: ...",
-        "conclusion": "Semgrep confirms the sink is present with the source pattern."
+        "conclusion": "Semgrep confirms the sink is reachable with the source pattern.",
+        "structured": {
+          "kind": "semgrep_matches",
+          "hits": [
+            {"file": "src/auth.py", "line_start": 47, "line_end": 47, "snippet": "cursor.execute(query)"}
+          ],
+          "summary": "Semgrep matched 1 location:\n  src/auth.py:47 — CWE-89"
+        }
       },
       {
         "iteration": 2,
         "action": "grep_sanitizers(validate|sanitize|escape|quote|encode)",
         "result": "No matches for pattern in src/auth.py.",
-        "conclusion": "No sanitizers found. The taint path is unimpeded."
+        "conclusion": "No sanitizers found. Taint path is unimpeded.",
+        "structured": {
+          "kind": "no_flow",
+          "hits": [],
+          "summary": "No matches for pattern 'validate|sanitize|...' in src/auth.py."
+        }
       },
       {
         "iteration": 3,
-        "action": "conclude",
-        "result": "Flow confirmed: request.args.get('id') → cursor.execute with no sanitizers.",
-        "conclusion": "High confidence this is exploitable."
+        "action": "conclude()",
+        "result": "Flow confirmed: request.args.get('id') → cursor.execute.",
+        "conclusion": "High confidence this is exploitable.",
+        "structured": {
+          "kind": "conclude",
+          "hits": [],
+          "summary": "Flow confirmed: request.args.get('id') → cursor.execute."
+        }
       }
     ]
   }
 ]
 ```
 
-The `verification_evidence` array is the audit trail of the ReAct loop. Each entry shows exactly what action was taken, what it returned, and how the LLM interpreted it. This is the primary artefact for human review of the pipeline's reasoning.
+**`structured` field (new):** Each evidence entry now carries a `StructuredEvidence` with:
+- `kind` — `semgrep_matches`, `grep_hits`, `code_slice`, `codeql_paths`, `no_flow`, `conclude`
+- `hits` — list of `CodeLocation` with precise `file`, `line_start`, `line_end`, `snippet`
+- `summary` — clean description used in the VerifierAgent prompt (no truncation)
+
+`DEDUP:` entries (when the LLM tried to repeat an action) appear as `action: "DEDUP:run_semgrep(...)"` with `result: "Action already performed — no new information."` and are excluded from the VerifierAgent evidence summary.
 
 ---
 
@@ -144,13 +167,11 @@ The `verification_evidence` array is the audit trail of the ReAct loop. Each ent
     "file": "/absolute/path/to/repo/src/auth.py",
     "line": 47,
     "cwe": "CWE-89",
-    "description": "...",
-    "confidence": 0.95,
     "source": "request.args.get('id')",
-    "sink": "cursor.execute(query)",
+    "sink": "cursor.execute",
     "taint_path_summary": "...",
     "poc": "1' OR '1'='1'; --",
-    "attack_scenario": "An unauthenticated attacker sends a GET request to /user?id=1' OR '1'='1'; -- which causes the query to return all rows in the users table, bypassing authentication and exposing all user records.",
+    "attack_scenario": "An unauthenticated attacker sends GET /user?id=1' OR '1'='1'; -- causing the query to return all rows, bypassing authentication.",
     "exploitability": "high"
   }
 ]
@@ -159,8 +180,6 @@ The `verification_evidence` array is the audit trail of the ReAct loop. Each ent
 ---
 
 ### `pipeline_report.json` — `PipelineReport`
-
-Summary statistics for the entire run.
 
 ```json
 {
@@ -175,7 +194,7 @@ Summary statistics for the entire run.
 }
 ```
 
-The funnel shape (24 files → 8 findings → 5 confirmed → 3 validated) is the key quality signal. A pipeline where Phase 1 produces 8 findings and Phase 5 retains 7 suggests the confidence threshold or Phase 3 verification is too permissive. A pipeline that retains 0 from 8 suggests the LLM is being overly conservative in Phase 4.
+The funnel shape (24 files → 8 findings → 5 confirmed → 3 validated) is the key quality signal. A healthy run drops roughly 40-60% of findings at each stage. A run that retains everything through all stages indicates the confidence threshold or VerifierAgent settings are too permissive.
 
 ---
 
@@ -189,81 +208,100 @@ The funnel shape (24 files → 8 findings → 5 confirmed → 3 validated) is th
 }
 ```
 
-Use this to estimate cost per repository at scale, and to detect regressions when model or prompt changes affect token consumption.
+Use this to estimate cost per repository at scale, and to detect regressions when model or prompt changes affect token consumption. With `MOSEC_VERIFIER_N=3`, expect Phase 3 verify tokens to increase by ~2.5× (3 Propose-Falsify-Decide cycles, not 3×, because Falsify and Decide share context).
 
 ---
 
 ## `results.sarif` — SARIF 2.1.0
 
-The SARIF file is compliant with [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) and importable into:
+Importable into:
+- **VS Code** — install the [SARIF Viewer](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer), then `Ctrl+Shift+P` → "SARIF: Open SARIF file"
+- **GitHub Code Scanning** — upload as a workflow artifact with `security-events` permission
+- **SonarQube / Defect Dojo / any SARIF-compatible platform**
 
-- **VS Code** — install the [SARIF Viewer](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer) extension, then `Ctrl+Shift+P` → "SARIF: Open SARIF file"
-- **GitHub Code Scanning** — upload as a workflow artifact to the `security-events` permission
-- **SonarQube** — via the Generic Issue import format (requires conversion)
-- **Defect Dojo** — direct SARIF import supported
-
-### SARIF result structure
-
-Each result includes:
+### Result structure
 
 | SARIF field | Contents |
 |---|---|
 | `ruleId` | The CWE identifier (e.g. `CWE-89`) |
 | `level` | `error` for HIGH/CRITICAL, `warning` for MEDIUM, `note` for LOW |
-| `message.text` | Title, attack scenario, PoC, and remediation in human-readable text |
-| `locations[0].physicalLocation.artifactLocation.uri` | File path relative to `%SRCROOT%` |
-| `locations[0].physicalLocation.region.startLine` | Line number of the sink |
-| `fingerprints.finding_id/v1` | Stable UUID — allows deduplication across runs |
-| `properties.cvss_score` | CVSS 3.1 base score (float) |
+| `message.text` | Title, attack scenario, PoC, and remediation |
+| `locations[0].physicalLocation` | File URI + start line |
+| `fingerprints.finding_id/v1` | Stable UUID for deduplication across runs |
+| `properties.cvss_score` | CVSS 3.1 base score |
 | `properties.cvss_vector` | Full CVSS vector string |
 | `properties.poc` | The concrete PoC payload |
-| `properties.exploitability` | `high` / `medium` / `low` |
+| `codeFlows[0].threadFlows[0].locations` | Evidence trace from ReAct loop (new) |
 
-### Importing into VS Code
+### `codeFlows` — taint evidence trace (new)
 
-```bash
-# Install the extension (once)
-code --install-extension MS-SarifVSCode.sarif-viewer
+Each result now includes a `codeFlows` array built from `VerificationEvidence.structured.hits`:
 
-# Open your audit results
-code ./output/results.sarif
+```json
+"codeFlows": [{
+  "message": {"text": "Taint flow verified in 3 ReAct iteration(s)"},
+  "threadFlows": [{
+    "locations": [
+      {
+        "location": {
+          "physicalLocation": {
+            "artifactLocation": {"uri": "src/auth.py", "uriBaseId": "%SRCROOT%"},
+            "region": {"startLine": 47, "endLine": 47}
+          },
+          "message": {"text": "[run_semgrep()] src/auth.py:47 — CWE-89: SQL injection match"}
+        }
+      },
+      {
+        "location": {
+          "physicalLocation": {
+            "artifactLocation": {"uri": "src/auth.py", "uriBaseId": "%SRCROOT%"},
+            "region": {"startLine": 47, "endLine": 47}
+          },
+          "message": {"text": "[grep_sanitizers()] No sanitizers found in function body"}
+        }
+      }
+    ]
+  }]
+}]
 ```
 
-The SARIF viewer will annotate the vulnerable lines directly in the editor with severity icons and the full finding detail panel on click.
+In VS Code SARIF Viewer, these locations appear as a navigable taint trace. Click any location to jump to the relevant line.
 
 ---
 
 ## `report.md` — Markdown Security Report
 
-Human-readable, self-contained security report. Structure:
+Human-readable, self-contained security report sorted by CVSS descending.
 
 ```
 # MoSec SAST Security Report
-Generated: 2025-06-12 14:23 UTC
+Generated: 2025-10-14 09:22 UTC
 
 ## Summary
 | # | Severity | CVSS | CWE | File | Title |
-...
+|---|----------|------|-----|------|-------|
+| 1 | CRITICAL  | 9.8  | CWE-89 | auth.py:47 | SQL Injection in login |
 
 ---
 
-## 1. <Title>  🔴 CRITICAL
+## 1. SQL Injection in login  🔴 CRITICAL
 
-| Field      | Value                          |
-|------------|--------------------------------|
-| File       | `src/auth.py:47`               |
-| CWE        | CWE-89                         |
-| CVSS 3.1   | CVSS:3.1/AV:N/... → 9.1 CRITICAL |
-| Exploitability | high                       |
+| Field | Value |
+|-------|-------|
+| File | `src/auth.py:47` |
+| CWE | CWE-89 |
+| CVSS 3.1 | `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N` → **9.1** (CRITICAL) |
+| Exploitability | high |
+| Finding ID | `3f7a2c1b-...` |
 
 ### Description
-...
+[description]
 
 ### Attack Scenario
-...
+[attack scenario]
 
 ### Impact
-...
+[impact]
 
 ### Proof of Concept
 ```
@@ -271,25 +309,50 @@ Generated: 2025-06-12 14:23 UTC
 ```
 
 ### Taint Flow
-*See confirmed_flows.json → finding <UUID> for the full ReAct trace.*
+*See `confirmed_flows.json` → finding `3f7a2c1b-...` for the full ReAct trace.*
 
 ### Remediation
-Use parameterised queries: cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+Use parameterised queries: `cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))`
 ```
 
-Findings are sorted by CVSS descending. The report is designed to be sent directly to a development team or included in a security audit document without further editing.
+---
+
+## `bench_report.json` — Benchmark results
+
+Produced by `python -m benchmarks.runner`. Contains precision/recall/F1 per CWE and per difficulty level:
+
+```json
+{
+  "summary": {
+    "total": 10, "tp": 5, "fp": 0, "tn": 3, "fn": 2,
+    "precision": 1.0, "recall": 0.71, "f1": 0.83,
+    "accuracy": 0.80, "elapsed_s": 312.4
+  },
+  "per_cwe": {
+    "CWE-79": {"tp": 2, "fp": 0, "tn": 1, "fn": 1},
+    "CWE-89": {"tp": 2, "fp": 0, "tn": 1, "fn": 0}
+  },
+  "per_difficulty": {
+    "normal": {"tp": 5, "fp": 0, "tn": 3, "fn": 0},
+    "hard":   {"tp": 0, "fp": 0, "tn": 0, "fn": 2}
+  },
+  "cases": [
+    {
+      "case": "tp_flask_xss", "label": "TP", "cwe": "CWE-79",
+      "expected": true, "predicted": true, "correct": true,
+      "tp": true, "fp": false, "tn": false, "fn": false,
+      "elapsed_s": 28.4
+    }
+  ]
+}
+```
+
+The CI gate exits with code 1 when `f1 < 0.5`. Run with `make bench` or `python -m benchmarks.runner` after any change to agents, prompts, or schemas.
 
 ---
 
 ## `pipeline.log`
 
-Structured log in `asctime  LEVEL  logger_name  message` format. Contains:
-- Per-phase start/end markers
-- Per-file finding counts (Phase 1)
-- Per-finding taint spec results (Phase 2)
-- Per-finding ReAct iteration log (Phase 3)
-- Per-finding PoC result and static trace result (Phase 4)
-- CVSS scores (Phase 5)
-- Token usage summary
+Structured log with per-phase start/end markers, per-finding taint spec results, per-finding ReAct iteration log (action, structured observation, confidence), VerifierAgent stage transitions (propose → falsify → decide), and token usage summary.
 
-Set `--log-level DEBUG` (not currently a CLI arg — change `logging.basicConfig(level=...)` in `pipeline.py`) to see individual LLM call inputs and outputs.
+For verbose LLM call inspection, set `LOG_LEVEL=DEBUG` in `.env` or change `logging.basicConfig(level=logging.DEBUG)` in `pipeline.py`.

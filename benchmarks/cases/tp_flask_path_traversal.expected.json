@@ -1,0 +1,10 @@
+{
+  "label": "TP",
+  "description": "Path traversal: request.args.get('filename') passed to open() without sanitization",
+  "cwe": "CWE-22",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "open",
+  "exploitability": "high",
+  "notes": "PoC: ?filename=../../../etc/passwd"
+}

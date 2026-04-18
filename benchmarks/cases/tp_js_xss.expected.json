@@ -1,0 +1,10 @@
+{
+  "label": "TP",
+  "description": "XSS: req.query.q interpolated into innerHTML via server-side template string",
+  "cwe": "CWE-79",
+  "should_validate": true,
+  "source_hint": "req.query",
+  "sink_hint": "innerHTML",
+  "exploitability": "high",
+  "notes": "PoC: ?q=</script><script>alert(1)</script>"
+}

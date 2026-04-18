@@ -1,0 +1,11 @@
+{
+  "label": "TP",
+  "description": "SQLi via sanitizer bypass: sanitize_id() only called on one branch; else branch concatenates raw input",
+  "cwe": "CWE-89",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "cursor.execute",
+  "exploitability": "high",
+  "notes": "Edge case: tests whether the pipeline detects that the sanitizer on one branch does not protect the other branch. PoC: ?id=nonexistent' OR 1=1--",
+  "difficulty": "hard"
+}

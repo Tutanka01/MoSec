@@ -1,0 +1,10 @@
+{
+  "label": "FP",
+  "description": "Command injection mitigated: shlex.quote applied before subprocess.run",
+  "cwe": "CWE-78",
+  "should_validate": false,
+  "source_hint": "request.args.get",
+  "sink_hint": "subprocess.run",
+  "sanitizer": "shlex.quote",
+  "notes": "shlex.quote wraps the argument in single quotes, neutralising shell metacharacters."
+}

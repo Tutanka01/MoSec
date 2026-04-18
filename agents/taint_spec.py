@@ -3,6 +3,9 @@ Phase 2 — Taint Specification Agent (SemTaint-style)
 
 For every finding from Phase 1, retrieves code context and asks the LLM to
 pinpoint the exact source, sink, sanitizers, and unresolved calls.
+
+Lot C enhancement: AST candidates are extracted first and passed to the LLM
+so it selects from a grounded list rather than inventing source/sink names.
 Then generates a Semgrep taint-mode rule YAML for each finding.
 Output: taint_specs.json  +  /tmp/audit_rules/{finding_id}.yaml
 """
@@ -15,7 +18,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from models.schemas import FileFinding, TaintSpec
+from models.schemas import ASTCandidate, FileFinding, TaintSpec
 from utils.llm import LLMClient, LLMError
 from utils.sast import generate_semgrep_rule
 
@@ -25,20 +28,27 @@ _CONTEXT_LINES: int = 50  # lines above and below the finding
 
 _SYSTEM_PROMPT = """\
 You are a taint analysis expert.
-Given the code and a suspected vulnerability, perform precise taint analysis.
+Given the code and AST-extracted candidate sources/sinks, perform precise taint analysis.
 
-1. Identify the EXACT SOURCE: the function/parameter/variable where untrusted data enters.
-2. Identify the EXACT SINK: the function call where the data becomes dangerous.
+Your task:
+1. Select the BEST SOURCE from the candidates list: the exact point where untrusted data enters.
+2. Select the BEST SINK from the candidates list: where the tainted data becomes dangerous.
 3. Identify any SANITIZERS on the path (functions that validate or escape the data).
-4. List any UNRESOLVED CALLS on the taint path (dynamic dispatch, callbacks, unknown function pointers).
+4. List any UNRESOLVED CALLS on the taint path.
+5. State the sink_kind: "call", "method_call", "property_assignment", or "subscript_assignment".
+
+If no candidates are provided or none fit, infer from the code — but prefer candidates.
 
 Respond ONLY in JSON (no markdown, no prose):
 {
-  "source": "<function or variable name>",
-  "sink": "<function call or expression>",
+  "source": "<exact source function or variable name from candidates>",
+  "sink": "<exact sink function or expression from candidates>",
+  "sink_kind": "call" | "method_call" | "property_assignment" | "subscript_assignment",
   "sanitizers": ["<sanitizer1>", ...],
   "unresolved_calls": ["<call1>", ...],
-  "taint_path_summary": "<one or two sentence description of the complete flow>"
+  "taint_path_summary": "<one or two sentence description of the complete flow>",
+  "source_line": <int or null>,
+  "sink_line": <int or null>
 }
 """
 
@@ -93,6 +103,10 @@ class TaintSpecAgent:
     def _process_finding(self, finding: FileFinding) -> TaintSpec:
         code_ctx = self._extract_context(finding.file, finding.line)
 
+        # Lot C: extract AST candidates to ground the LLM's source/sink selection
+        ast_candidates = self._extract_ast_candidates(finding)
+        candidates_block = self._format_candidates(ast_candidates)
+
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
@@ -101,6 +115,7 @@ class TaintSpecAgent:
                     f"File: {finding.file}\n"
                     f"Suspected vulnerability at line {finding.line} ({finding.cwe}):\n"
                     f"{finding.description}\n\n"
+                    f"{candidates_block}"
                     f"Code context:\n```\n{code_ctx}\n```"
                 ),
             },
@@ -115,8 +130,9 @@ class TaintSpecAgent:
 
         taint_data = self._parse_response(content, finding.finding_id)
 
-        # Generate Semgrep rule
+        # Generate Semgrep rule — pass sink_kind for AST-aware pattern generation
         file_suffix = Path(finding.file).suffix
+        sink_kind = taint_data.get("sink_kind", "call") or "call"
         rule_yaml = generate_semgrep_rule(
             finding_id=finding.finding_id,
             source=taint_data["source"],
@@ -125,6 +141,8 @@ class TaintSpecAgent:
             description=finding.description,
             language=file_suffix,
             sanitizers=taint_data.get("sanitizers", []),
+            sink_kind=sink_kind,
+            validate=True,
         )
         rule_path = self.rules_dir / f"{finding.finding_id}.yaml"
         rule_path.write_text(rule_yaml, encoding="utf-8")
@@ -142,6 +160,9 @@ class TaintSpecAgent:
             unresolved_calls=taint_data.get("unresolved_calls", []),
             taint_path_summary=taint_data.get("taint_path_summary", ""),
             semgrep_rule_path=str(rule_path),
+            sink_kind=sink_kind,
+            source_line=taint_data.get("source_line"),
+            sink_line=taint_data.get("sink_line"),
         )
 
     # ------------------------------------------------------------------
@@ -163,34 +184,89 @@ class TaintSpecAgent:
         ]
         return "\n".join(numbered)
 
+    def _extract_ast_candidates(self, finding: FileFinding) -> list[ASTCandidate]:
+        """Run AST extraction and return source/sink candidates (Lot C)."""
+        try:
+            from utils.ast_extractor import TaintCandidateExtractor  # noqa: PLC0415
+            extractor = TaintCandidateExtractor()
+            return extractor.extract(
+                file_path=finding.file,
+                center_line=finding.line,
+                cwe=finding.cwe,
+                radius=_CONTEXT_LINES,
+            )
+        except Exception as exc:
+            logger.debug("Phase 2 | AST extraction failed (non-fatal): %s", exc)
+            return []
+
+    @staticmethod
+    def _format_candidates(candidates: list[ASTCandidate]) -> str:
+        """Format AST candidates as a structured block for the LLM prompt."""
+        if not candidates:
+            return ""
+
+        sources = [c for c in candidates if c.kind == "source"]
+        sinks = [c for c in candidates if c.kind == "sink"]
+
+        lines: list[str] = ["AST-extracted candidates (prefer these over guessing):\n"]
+
+        if sources:
+            lines.append("  Sources:")
+            for c in sources[:5]:
+                rv = f" → var {c.returns_var}" if c.returns_var else ""
+                lines.append(f"    - {c.name} (line {c.line}{rv})")
+
+        if sinks:
+            lines.append("  Sinks:")
+            for c in sinks[:5]:
+                af = f" ← {c.assigned_from}" if c.assigned_from else ""
+                lines.append(f"    - {c.name} [{c.sink_kind}] (line {c.line}{af})")
+
+        lines.append("")
+        return "\n".join(lines) + "\n"
+
     def _parse_response(self, content: str, finding_id: str) -> dict:
         """Parse the LLM response and return a dict with required keys."""
         try:
             data = self.llm.extract_json(content)
         except ValueError as exc:
             logger.warning("Phase 2 | JSON parse failed for %s: %s", finding_id, exc)
-            # Return minimal fallback structure
             return {
                 "source": "unknown_source",
                 "sink": "unknown_sink",
+                "sink_kind": "call",
                 "sanitizers": [],
                 "unresolved_calls": [],
                 "taint_path_summary": "LLM response could not be parsed.",
+                "source_line": None,
+                "sink_line": None,
             }
 
         if not isinstance(data, dict):
             return {
                 "source": str(data)[:80],
                 "sink": "unknown_sink",
+                "sink_kind": "call",
                 "sanitizers": [],
                 "unresolved_calls": [],
                 "taint_path_summary": "",
+                "source_line": None,
+                "sink_line": None,
             }
 
         # Normalise: ensure required keys exist
         data.setdefault("source", "unknown_source")
         data.setdefault("sink", "unknown_sink")
+        data.setdefault("sink_kind", "call")
         data.setdefault("sanitizers", [])
         data.setdefault("unresolved_calls", [])
         data.setdefault("taint_path_summary", "")
+        data.setdefault("source_line", None)
+        data.setdefault("sink_line", None)
+
+        # Validate sink_kind
+        valid_kinds = {"call", "method_call", "property_assignment", "subscript_assignment"}
+        if data["sink_kind"] not in valid_kinds:
+            data["sink_kind"] = "call"
+
         return data

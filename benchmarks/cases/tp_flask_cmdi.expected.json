@@ -1,0 +1,10 @@
+{
+  "label": "TP",
+  "description": "Command injection: request.args.get('host') passed to os.system",
+  "cwe": "CWE-78",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "os.system",
+  "exploitability": "high",
+  "notes": "PoC: ?host=localhost;cat /etc/passwd"
+}

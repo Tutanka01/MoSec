@@ -1,0 +1,11 @@
+{
+  "label": "TP",
+  "description": "Inter-procedural XSS: source in get_user_name(), sink in greet()",
+  "cwe": "CWE-79",
+  "should_validate": true,
+  "source_hint": "request.args.get",
+  "sink_hint": "make_response",
+  "exploitability": "high",
+  "notes": "Edge case: tests inter-procedural analysis. Intra-proc CFG may miss this — needs CodeQL or call-graph analysis.",
+  "difficulty": "hard"
+}

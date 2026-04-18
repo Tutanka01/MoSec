@@ -215,11 +215,13 @@ def run_pipeline(
 
     if start_phase <= 3:
         logger.info("═══ Phase 3: Data Flow Verification (ReAct) ═══")
+        consistency_n = int(os.environ.get("MOSEC_VERIFIER_N", "1"))
         agent3 = DataFlowAgent(
             llm,
             str(output_dir),
             codeql_db_path=manifest.codeql_db_path,
             codeql_bin=codeql_bin,
+            consistency_n=consistency_n,
         )
         confirmed_flows = agent3.run(taint_specs, manifest.repo_path)
     else:
@@ -261,7 +263,7 @@ def run_pipeline(
             "confirmed_flows": len(confirmed_flows),
         }
         agent5 = ReporterAgent(llm, str(output_dir), pipeline_stats=pipeline_stats)
-        report = agent5.run(validated_vulns)
+        report = agent5.run(validated_vulns, confirmed_flows=confirmed_flows)
     else:
         logger.info("Phase 5 skipped — nothing to do")
         return None

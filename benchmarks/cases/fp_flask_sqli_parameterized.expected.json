@@ -1,0 +1,10 @@
+{
+  "label": "FP",
+  "description": "SQL injection mitigated: parameterized query with ? placeholder",
+  "cwe": "CWE-89",
+  "should_validate": false,
+  "source_hint": "request.args.get",
+  "sink_hint": "cursor.execute",
+  "sanitizer": "parameterized query",
+  "notes": "The ? placeholder separates data from SQL structure. Not exploitable."
+}
