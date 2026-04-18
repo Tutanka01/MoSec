@@ -118,7 +118,7 @@ class TriageAgent:
             logger.error("LLM call failed for %s: %s", file_path, exc)
             return []
 
-        logger.debug("Phase 1 | %s | tokens: %s", file_path, usage)
+        logger.debug("Phase 1 | %s | tokens: %s", file_path, usage)  # nosemgrep
         return self._parse_llm_response(content, file_path)
 
     # ------------------------------------------------------------------

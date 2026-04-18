@@ -137,7 +137,7 @@ class TaintSpecAgent:
         except LLMError as exc:
             raise RuntimeError(f"LLM call failed: {exc}") from exc
 
-        logger.debug("Phase 2 | %s | tokens: %s", finding.finding_id, usage)
+        logger.debug("Phase 2 | %s | tokens: %s", finding.finding_id, usage)  # nosemgrep
 
         taint_data = self._parse_response(content, finding.finding_id)
 

@@ -1,0 +1,5 @@
+# Benchmark test fixtures contain intentionally vulnerable code — not production code
+benchmarks/cases/
+
+# Vendored dependencies
+venv/
