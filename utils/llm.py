@@ -99,9 +99,9 @@ class LLMClient:
                         )
                         return content, usage
 
-                logger.debug(
+                logger.debug(  # nosemgrep
                     "LLM call ok | model=%s tokens=%s", self.model, usage
-                )  # nosemgrep
+                )
                 return content, usage
 
             except (RateLimitError, APIConnectionError, APIStatusError) as exc:
