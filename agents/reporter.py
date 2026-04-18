@@ -121,9 +121,7 @@ class ReporterAgent:
                     entry.title,
                 )
             except Exception as exc:
-                logger.error(
-                    "Phase 5 | error on finding %s: %s", vuln.finding_id, exc
-                )
+                logger.error("Phase 5 | error on finding %s: %s", vuln.finding_id, exc)
 
         # Sort by CVSS descending
         entries.sort(key=lambda e: e.cvss.base_score, reverse=True)
@@ -205,7 +203,9 @@ class ReporterAgent:
             )
             data = self.llm.extract_json(content)
         except (LLMError, ValueError) as exc:
-            logger.warning("Phase 5 | CVSS scoring failed for %s: %s", vuln.finding_id, exc)
+            logger.warning(
+                "Phase 5 | CVSS scoring failed for %s: %s", vuln.finding_id, exc
+            )
             return {
                 "metrics": _DEFAULT_METRICS,
                 "extra": {
@@ -238,7 +238,9 @@ class ReporterAgent:
         )
 
         extra = {
-            "title": str(data.get("title", f"{vuln.cwe} in {Path(vuln.file).name}"))[:80],
+            "title": str(data.get("title", f"{vuln.cwe} in {Path(vuln.file).name}"))[
+                :80
+            ],
             "impact": str(data.get("impact", "")),
             "remediation": str(data.get("remediation", "")),
         }
@@ -269,20 +271,24 @@ class ReporterAgent:
             rule_id = e.cwe.replace(" ", "-")
             if rule_id not in seen_rules:
                 seen_rules.add(rule_id)
-                rules.append({
-                    "id": rule_id,
-                    "name": e.title,
-                    "shortDescription": {"text": e.title},
-                    "fullDescription": {"text": e.description},
-                    "defaultConfiguration": {
-                        "level": _SEVERITY_LEVEL.get(e.cvss.severity, "warning"),
-                    },
-                    "properties": {
-                        "tags": ["security", e.cwe],
-                        "problem.severity": _SEVERITY_LEVEL.get(e.cvss.severity, "warning"),
-                        "security-severity": str(e.cvss.base_score),
-                    },
-                })
+                rules.append(
+                    {
+                        "id": rule_id,
+                        "name": e.title,
+                        "shortDescription": {"text": e.title},
+                        "fullDescription": {"text": e.description},
+                        "defaultConfiguration": {
+                            "level": _SEVERITY_LEVEL.get(e.cvss.severity, "warning"),
+                        },
+                        "properties": {
+                            "tags": ["security", e.cwe],
+                            "problem.severity": _SEVERITY_LEVEL.get(
+                                e.cvss.severity, "warning"
+                            ),
+                            "security-severity": str(e.cvss.base_score),
+                        },
+                    }
+                )
 
             # Normalise path for SARIF URIs (forward slashes, no leading /)
             uri = e.file.replace("\\", "/").lstrip("/")
@@ -457,7 +463,9 @@ def _build_code_flows(
         # Prefer structured evidence hits (accurate line numbers)
         if ev.structured and ev.structured.hits:
             for hit in ev.structured.hits[:3]:
-                hit_uri = hit.file.replace("\\", "/").lstrip("/") if hit.file else default_uri
+                hit_uri = (
+                    hit.file.replace("\\", "/").lstrip("/") if hit.file else default_uri
+                )
                 loc: dict = {
                     "location": {
                         "physicalLocation": {
@@ -476,27 +484,31 @@ def _build_code_flows(
                 thread_flow_locations.append(loc)
         else:
             # Fallback: record the action as a logical location (no line number)
-            thread_flow_locations.append({
-                "location": {
-                    "physicalLocation": {
-                        "artifactLocation": {
-                            "uri": default_uri,
-                            "uriBaseId": "%SRCROOT%",
+            thread_flow_locations.append(
+                {
+                    "location": {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": default_uri,
+                                "uriBaseId": "%SRCROOT%",
+                            },
+                            "region": {"startLine": max(1, flow.line)},
                         },
-                        "region": {"startLine": max(1, flow.line)},
-                    },
-                    "message": {
-                        "text": f"[iter {ev.iteration}] {ev.action}: {ev.result[:200]}"
-                    },
+                        "message": {
+                            "text": f"[iter {ev.iteration}] {ev.action}: {ev.result[:200]}"
+                        },
+                    }
                 }
-            })
+            )
 
     if not thread_flow_locations:
         return None
 
     return [
         {
-            "message": {"text": f"Taint flow verified in {flow.verification_iterations} ReAct iteration(s)"},
+            "message": {
+                "text": f"Taint flow verified in {flow.verification_iterations} ReAct iteration(s)"
+            },
             "threadFlows": [
                 {
                     "locations": thread_flow_locations,

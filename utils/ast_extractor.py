@@ -39,7 +39,10 @@ try:
     _js_parser = _TSParser(_JS_LANGUAGE)
     _TS_AVAILABLE = True
 except Exception as _ts_err:
-    logger.debug("tree-sitter-javascript not available (%s) — JS will use regex fallback", _ts_err)
+    logger.debug(
+        "tree-sitter-javascript not available (%s) — JS will use regex fallback",
+        _ts_err,
+    )
 
 try:
     import tree_sitter_php as _tsphp
@@ -48,7 +51,9 @@ try:
     _PHP_LANGUAGE = _TSLanguage(_tsphp.language_php())
     _php_parser = _TSParser(_PHP_LANGUAGE)
 except Exception as _ts_php_err:
-    logger.debug("tree-sitter-php not available (%s) — PHP will use regex fallback", _ts_php_err)
+    logger.debug(
+        "tree-sitter-php not available (%s) — PHP will use regex fallback", _ts_php_err
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -56,36 +61,45 @@ except Exception as _ts_php_err:
 # ---------------------------------------------------------------------------
 
 _PYTHON_SOURCES: dict[str, set[str]] = {
-    "flask":   {
-        "request.args.get", "request.form.get", "request.json",
-        "request.cookies.get", "request.data", "request.values.get",
-        "request.files.get", "request.args", "request.form", "request.values",
+    "flask": {
+        "request.args.get",
+        "request.form.get",
+        "request.json",
+        "request.cookies.get",
+        "request.data",
+        "request.values.get",
+        "request.files.get",
+        "request.args",
+        "request.form",
+        "request.values",
         "request.get_json",
     },
-    "django":  {
-        "request.GET.get", "request.POST.get", "request.body",
-        "request.META.get", "request.GET", "request.POST",
+    "django": {
+        "request.GET.get",
+        "request.POST.get",
+        "request.body",
+        "request.META.get",
+        "request.GET",
+        "request.POST",
     },
-    "stdlib":  {"input", "sys.argv", "os.environ.get", "os.environ"},
+    "stdlib": {"input", "sys.argv", "os.environ.get", "os.environ"},
     "fastapi": {"Query", "Body", "Form", "Cookie", "Header", "Path"},
 }
 
 # Source bare names (leaf identifier) for quick matching
 _PYTHON_SOURCE_BARE: set[str] = {
-    s.split(".")[-1]
-    for group in _PYTHON_SOURCES.values()
-    for s in group
+    s.split(".")[-1] for group in _PYTHON_SOURCES.values() for s in group
 }
 
 _PYTHON_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
-    "CWE-79":  [
+    "CWE-79": [
         ("innerHTML", "property_assignment"),
         ("outerHTML", "property_assignment"),
         ("document.write", "call"),
         ("eval", "call"),
         ("write", "method_call"),
     ],
-    "CWE-89":  [
+    "CWE-89": [
         ("execute", "method_call"),
         ("executemany", "method_call"),
         ("raw", "method_call"),
@@ -94,7 +108,7 @@ _PYTHON_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
         ("extra", "method_call"),
         ("raw_query", "method_call"),
     ],
-    "CWE-78":  [
+    "CWE-78": [
         ("subprocess.Popen", "call"),
         ("subprocess.run", "call"),
         ("subprocess.call", "call"),
@@ -103,7 +117,7 @@ _PYTHON_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
         ("exec", "call"),
         ("eval", "call"),
     ],
-    "CWE-22":  [
+    "CWE-22": [
         ("open", "call"),
         ("pathlib.Path", "call"),
         ("send_file", "call"),
@@ -116,7 +130,7 @@ _PYTHON_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
         ("marshal.loads", "call"),
         ("jsonpickle.decode", "call"),
     ],
-    "CWE-94":  [
+    "CWE-94": [
         ("eval", "call"),
         ("exec", "call"),
         ("compile", "call"),
@@ -125,9 +139,14 @@ _PYTHON_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
 }
 
 _JS_SOURCES: set[str] = {
-    "req.query", "req.body", "req.params",
-    "document.location.search", "window.location.hash",
-    "URLSearchParams", "localStorage.getItem", "sessionStorage.getItem",
+    "req.query",
+    "req.body",
+    "req.params",
+    "document.location.search",
+    "window.location.hash",
+    "URLSearchParams",
+    "localStorage.getItem",
+    "sessionStorage.getItem",
     "document.cookie",
 }
 
@@ -138,17 +157,30 @@ _JS_SOURCE_BARE: set[str] = {s.split(".")[-1] for s in _JS_SOURCES}
 # ---------------------------------------------------------------------------
 
 _PHP_SOURCES: set[str] = {
-    "$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER", "$_FILES",
-    "$_ENV", "$HTTP_RAW_POST_DATA",
+    "$_GET",
+    "$_POST",
+    "$_REQUEST",
+    "$_COOKIE",
+    "$_SERVER",
+    "$_FILES",
+    "$_ENV",
+    "$HTTP_RAW_POST_DATA",
 }
 
 _PHP_SOURCE_BARE: set[str] = {
-    "_GET", "_POST", "_REQUEST", "_COOKIE", "_SERVER", "_FILES", "_ENV",
-    "getallheaders", "apache_request_headers",
+    "_GET",
+    "_POST",
+    "_REQUEST",
+    "_COOKIE",
+    "_SERVER",
+    "_FILES",
+    "_ENV",
+    "getallheaders",
+    "apache_request_headers",
 }
 
 _PHP_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
-    "CWE-79":  [
+    "CWE-79": [
         ("echo", "call"),
         ("print", "call"),
         ("printf", "call"),
@@ -156,14 +188,14 @@ _PHP_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
         ("vprintf", "call"),
         ("innerHTML", "property_assignment"),
     ],
-    "CWE-89":  [
+    "CWE-89": [
         ("mysqli_query", "call"),
         ("query", "method_call"),
         ("exec", "method_call"),
         ("mysqli_multi_query", "call"),
         ("pg_query", "call"),
     ],
-    "CWE-78":  [
+    "CWE-78": [
         ("exec", "call"),
         ("system", "call"),
         ("shell_exec", "call"),
@@ -172,7 +204,7 @@ _PHP_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
         ("proc_open", "call"),
         ("pcntl_exec", "call"),
     ],
-    "CWE-22":  [
+    "CWE-22": [
         ("file_get_contents", "call"),
         ("fopen", "call"),
         ("include", "call"),
@@ -185,7 +217,7 @@ _PHP_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
     "CWE-502": [
         ("unserialize", "call"),
     ],
-    "CWE-94":  [
+    "CWE-94": [
         ("eval", "call"),
         ("assert", "call"),
         ("create_function", "call"),
@@ -193,7 +225,7 @@ _PHP_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
 }
 
 _JS_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
-    "CWE-79":  [
+    "CWE-79": [
         ("innerHTML", "property_assignment"),
         ("outerHTML", "property_assignment"),
         ("document.write", "call"),
@@ -201,12 +233,12 @@ _JS_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
         ("dangerouslySetInnerHTML", "property_assignment"),
         ("insertAdjacentHTML", "method_call"),
     ],
-    "CWE-89":  [
+    "CWE-89": [
         ("query", "method_call"),
         ("execute", "method_call"),
         ("run", "method_call"),
     ],
-    "CWE-78":  [
+    "CWE-78": [
         ("exec", "call"),
         ("execSync", "call"),
         ("spawn", "call"),
@@ -259,9 +291,8 @@ class SimpleCFG:
         *barriers* are variable/function names that break the taint chain.
         """
         # Direct check: any source var is directly consumed by the sink
-        sink_consumers = (
-            self._sink_args.get(sink_name, set()) |
-            self._prop_assigns.get(sink_name, set())
+        sink_consumers = self._sink_args.get(sink_name, set()) | self._prop_assigns.get(
+            sink_name, set()
         )
         direct_hit = source_vars & sink_consumers
         if direct_hit:
@@ -282,7 +313,9 @@ class SimpleCFG:
                         visited.add(target)
                         path.append(f"{var} → {target}")
                         # Check if this derived var reaches the sink
-                        all_sink_args = sink_consumers | self._sink_args.get(sink_name, set())
+                        all_sink_args = sink_consumers | self._sink_args.get(
+                            sink_name, set()
+                        )
                         if target in all_sink_args or target == sink_name:
                             return True, path
             frontier = next_frontier - barriers
@@ -379,14 +412,16 @@ class TaintCandidateExtractor:
                     s for group in _PYTHON_SOURCES.values() for s in group
                 }:
                     returns_var = _find_assignment_target(tree, lineno)
-                    candidates.append(ASTCandidate(
-                        kind="source",
-                        name=call_str,
-                        line=lineno,
-                        col=col,
-                        sink_kind="call",
-                        returns_var=returns_var,
-                    ))
+                    candidates.append(
+                        ASTCandidate(
+                            kind="source",
+                            name=call_str,
+                            line=lineno,
+                            col=col,
+                            sink_kind="call",
+                            returns_var=returns_var,
+                        )
+                    )
 
             # Sink detection: function/method calls
             if isinstance(node, ast.Call):
@@ -394,14 +429,16 @@ class TaintCandidateExtractor:
                 for sink_name, sink_kind in sinks_for_cwe:
                     bare_sink = sink_name.split(".")[-1]
                     if bare_sink and bare_sink in call_str:
-                        candidates.append(ASTCandidate(
-                            kind="sink",
-                            name=call_str,
-                            line=lineno,
-                            col=col,
-                            sink_kind=sink_kind,
-                            args=[_expr_to_str(a) for a in node.args],
-                        ))
+                        candidates.append(
+                            ASTCandidate(
+                                kind="sink",
+                                name=call_str,
+                                line=lineno,
+                                col=col,
+                                sink_kind=sink_kind,
+                                args=[_expr_to_str(a) for a in node.args],
+                            )
+                        )
                         break
 
             # Sink detection: property assignments (e.g., elem.innerHTML = x)
@@ -411,14 +448,16 @@ class TaintCandidateExtractor:
                         attr = target.attr
                         for sink_name, _ in sinks_for_cwe:
                             if attr == sink_name.split(".")[-1]:
-                                candidates.append(ASTCandidate(
-                                    kind="sink",
-                                    name=f"{_expr_to_str(target.value)}.{attr}",
-                                    line=lineno,
-                                    col=col,
-                                    sink_kind="property_assignment",
-                                    assigned_from=_expr_to_str(node.value),
-                                ))
+                                candidates.append(
+                                    ASTCandidate(
+                                        kind="sink",
+                                        name=f"{_expr_to_str(target.value)}.{attr}",
+                                        line=lineno,
+                                        col=col,
+                                        sink_kind="property_assignment",
+                                        assigned_from=_expr_to_str(node.value),
+                                    )
+                                )
                                 break
 
         return candidates
@@ -437,7 +476,9 @@ class TaintCandidateExtractor:
         for node in ast.walk(scope):
             # Variable assignments: target = expr
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
                 value = node.value
                 if value is None:
                     continue
@@ -496,7 +537,7 @@ class TaintCandidateExtractor:
         candidates: list[ASTCandidate] = []
 
         def visit(node) -> None:
-            row = node.start_point[0] + 1   # 1-indexed
+            row = node.start_point[0] + 1  # 1-indexed
             if row < line_min or row > line_max:
                 for child in node.children:
                     visit(child)
@@ -507,15 +548,19 @@ class TaintCandidateExtractor:
                 func_node = node.child_by_field_name("function")
                 if func_node and func_node.text:
                     fname = func_node.text.decode(errors="replace")
-                    if any(src in fname for src in _JS_SOURCES) or \
-                            fname.split(".")[-1] in _JS_SOURCE_BARE:
-                        candidates.append(ASTCandidate(
-                            kind="source",
-                            name=fname,
-                            line=row,
-                            col=node.start_point[1],
-                            sink_kind="call",
-                        ))
+                    if (
+                        any(src in fname for src in _JS_SOURCES)
+                        or fname.split(".")[-1] in _JS_SOURCE_BARE
+                    ):
+                        candidates.append(
+                            ASTCandidate(
+                                kind="source",
+                                name=fname,
+                                line=row,
+                                col=node.start_point[1],
+                                sink_kind="call",
+                            )
+                        )
 
             # Sink: assignment to dangerous property (elem.innerHTML = x)
             if node.type == "assignment_expression":
@@ -525,14 +570,18 @@ class TaintCandidateExtractor:
                     left_text = left.text.decode(errors="replace")
                     for sink_name, _ in sinks_for_cwe:
                         if sink_name.split(".")[-1] in left_text:
-                            candidates.append(ASTCandidate(
-                                kind="sink",
-                                name=left_text,
-                                line=row,
-                                col=node.start_point[1],
-                                sink_kind="property_assignment",
-                                assigned_from=right.text.decode(errors="replace") if right.text else "",
-                            ))
+                            candidates.append(
+                                ASTCandidate(
+                                    kind="sink",
+                                    name=left_text,
+                                    line=row,
+                                    col=node.start_point[1],
+                                    sink_kind="property_assignment",
+                                    assigned_from=right.text.decode(errors="replace")
+                                    if right.text
+                                    else "",
+                                )
+                            )
                             break
 
             # Sink: call expressions to dangerous functions
@@ -542,13 +591,15 @@ class TaintCandidateExtractor:
                     fname = func_node.text.decode(errors="replace")
                     for sink_name, sink_kind in sinks_for_cwe:
                         if sink_name.split(".")[-1] in fname:
-                            candidates.append(ASTCandidate(
-                                kind="sink",
-                                name=fname,
-                                line=row,
-                                col=node.start_point[1],
-                                sink_kind=sink_kind,
-                            ))
+                            candidates.append(
+                                ASTCandidate(
+                                    kind="sink",
+                                    name=fname,
+                                    line=row,
+                                    col=node.start_point[1],
+                                    sink_kind=sink_kind,
+                                )
+                            )
                             break
 
             for child in node.children:
@@ -569,13 +620,17 @@ class TaintCandidateExtractor:
             sinks_for_cwe = [item for lst in _PHP_SINKS_BY_CWE.values() for item in lst]
 
         if _php_parser is None:
-            return self._extract_php_regex(code, center_line, cwe, radius, sinks_for_cwe)
+            return self._extract_php_regex(
+                code, center_line, cwe, radius, sinks_for_cwe
+            )
 
         try:
             tree = _php_parser.parse(code.encode())
         except Exception as exc:
             logger.debug("PHP tree-sitter parse error: %s", exc)
-            return self._extract_php_regex(code, center_line, cwe, radius, sinks_for_cwe)
+            return self._extract_php_regex(
+                code, center_line, cwe, radius, sinks_for_cwe
+            )
 
         line_min = max(0, center_line - radius)
         line_max = center_line + radius
@@ -591,35 +646,45 @@ class TaintCandidateExtractor:
 
             # Source: subscript access on superglobals ($_GET['x'], $_POST['x'])
             if node.type == "subscript_expression":
-                obj = node.child_by_field_name("object") or (node.children[0] if node.children else None)
+                obj = node.child_by_field_name("object") or (
+                    node.children[0] if node.children else None
+                )
                 if obj and obj.text:
                     obj_text = obj.text.decode(errors="replace")
                     bare = obj_text.lstrip("$")
                     if bare in _PHP_SOURCE_BARE or obj_text in _PHP_SOURCES:
-                        candidates.append(ASTCandidate(
-                            kind="source",
-                            name=obj_text,
-                            line=row,
-                            col=node.start_point[1],
-                            sink_kind="subscript_assignment",
-                        ))
+                        candidates.append(
+                            ASTCandidate(
+                                kind="source",
+                                name=obj_text,
+                                line=row,
+                                col=node.start_point[1],
+                                sink_kind="subscript_assignment",
+                            )
+                        )
 
             # Source: direct superglobal variable reference
             if node.type == "variable_name" and node.text:
                 vname = node.text.decode(errors="replace")
                 bare = vname.lstrip("$")
                 if bare in _PHP_SOURCE_BARE:
-                    candidates.append(ASTCandidate(
-                        kind="source",
-                        name=vname,
-                        line=row,
-                        col=node.start_point[1],
-                        sink_kind="call",
-                    ))
+                    candidates.append(
+                        ASTCandidate(
+                            kind="source",
+                            name=vname,
+                            line=row,
+                            col=node.start_point[1],
+                            sink_kind="call",
+                        )
+                    )
 
             # Sink: function call (echo, system, mysqli_query, etc.)
             if node.type in ("function_call_expression", "echo_statement"):
-                func_node = node.child_by_field_name("function") if node.type != "echo_statement" else None
+                func_node = (
+                    node.child_by_field_name("function")
+                    if node.type != "echo_statement"
+                    else None
+                )
                 fname = ""
                 if func_node and func_node.text:
                     fname = func_node.text.decode(errors="replace")
@@ -628,13 +693,15 @@ class TaintCandidateExtractor:
 
                 for sink_name, sink_kind in sinks_for_cwe:
                     if sink_name.split(".")[-1].lower() == fname.lower():
-                        candidates.append(ASTCandidate(
-                            kind="sink",
-                            name=fname,
-                            line=row,
-                            col=node.start_point[1],
-                            sink_kind=sink_kind,
-                        ))
+                        candidates.append(
+                            ASTCandidate(
+                                kind="sink",
+                                name=fname,
+                                line=row,
+                                col=node.start_point[1],
+                                sink_kind=sink_kind,
+                            )
+                        )
                         break
 
             # Sink: method call ($pdo->query, $mysqli->query)
@@ -644,13 +711,15 @@ class TaintCandidateExtractor:
                     method_name = method_node.text.decode(errors="replace")
                     for sink_name, sink_kind in sinks_for_cwe:
                         if sink_name.split(".")[-1].lower() == method_name.lower():
-                            candidates.append(ASTCandidate(
-                                kind="sink",
-                                name=method_name,
-                                line=row,
-                                col=node.start_point[1],
-                                sink_kind=sink_kind,
-                            ))
+                            candidates.append(
+                                ASTCandidate(
+                                    kind="sink",
+                                    name=method_name,
+                                    line=row,
+                                    col=node.start_point[1],
+                                    sink_kind=sink_kind,
+                                )
+                            )
                             break
 
             for child in node.children:
@@ -679,17 +748,29 @@ class TaintCandidateExtractor:
             # Sources
             for bare in _PHP_SOURCE_BARE:
                 if re.search(r"\$" + re.escape(bare) + r"\b", line):
-                    candidates.append(ASTCandidate(
-                        kind="source", name=f"${bare}", line=lineno, col=0, sink_kind="call"
-                    ))
+                    candidates.append(
+                        ASTCandidate(
+                            kind="source",
+                            name=f"${bare}",
+                            line=lineno,
+                            col=0,
+                            sink_kind="call",
+                        )
+                    )
 
             # Sinks
             for sink_name, sink_kind in sinks_for_cwe:
                 bare = sink_name.split(".")[-1]
                 if re.search(r"\b" + re.escape(bare) + r"\b", line, re.IGNORECASE):
-                    candidates.append(ASTCandidate(
-                        kind="sink", name=sink_name, line=lineno, col=0, sink_kind=sink_kind
-                    ))
+                    candidates.append(
+                        ASTCandidate(
+                            kind="sink",
+                            name=sink_name,
+                            line=lineno,
+                            col=0,
+                            sink_kind=sink_kind,
+                        )
+                    )
 
         return candidates
 
@@ -751,9 +832,7 @@ class TaintCandidateExtractor:
         scope_lines = lines[func_start:func_end]
 
         # Patterns for variable assignment
-        assign_re = re.compile(
-            r"^\s*(?:const|let|var)?\s+(\w+)\s*=\s*(.+)$"
-        )
+        assign_re = re.compile(r"^\s*(?:const|let|var)?\s+(\w+)\s*=\s*(.+)$")
         call_re = re.compile(r"([\w.]+)\s*\(([^)]*)\)")
 
         for line in scope_lines:
@@ -805,17 +884,29 @@ class TaintCandidateExtractor:
             # Sources (PHP superglobals use $-prefix)
             for bare in all_sources_bare:
                 if re.search(r"(\$)?" + re.escape(bare) + r"\b", line):
-                    candidates.append(ASTCandidate(
-                        kind="source", name=bare, line=lineno, col=0, sink_kind="call"
-                    ))
+                    candidates.append(
+                        ASTCandidate(
+                            kind="source",
+                            name=bare,
+                            line=lineno,
+                            col=0,
+                            sink_kind="call",
+                        )
+                    )
 
             # Sinks
             for sink_name, sink_kind in all_sinks:
                 bare = sink_name.split(".")[-1]
                 if re.search(r"\b" + re.escape(bare) + r"\b", line):
-                    candidates.append(ASTCandidate(
-                        kind="sink", name=sink_name, line=lineno, col=0, sink_kind=sink_kind
-                    ))
+                    candidates.append(
+                        ASTCandidate(
+                            kind="sink",
+                            name=sink_name,
+                            line=lineno,
+                            col=0,
+                            sink_kind=sink_kind,
+                        )
+                    )
 
         return candidates
 
@@ -900,8 +991,17 @@ def _find_function_body_heuristic(lines: list[str], center_idx: int) -> tuple[in
     func_start = max(0, center_idx - 80)
     func_end = min(len(lines), center_idx + 80)
 
-    _FUNC_STARTS = ("def ", "async def ", "function ", "const ", "class ", "public function ",
-                    "private function ", "protected function ", "static function ")
+    _FUNC_STARTS = (
+        "def ",
+        "async def ",
+        "function ",
+        "const ",
+        "class ",
+        "public function ",
+        "private function ",
+        "protected function ",
+        "static function ",
+    )
 
     # Scan backwards for a function definition
     for i in range(center_idx, max(0, center_idx - 120), -1):
@@ -913,7 +1013,10 @@ def _find_function_body_heuristic(lines: list[str], center_idx: int) -> tuple[in
             for j in range(i + 1, min(len(lines), i + 300)):
                 s2 = lines[j].lstrip()
                 cur_indent = len(lines[j]) - len(s2)
-                if any(s2.startswith(fs) for fs in _FUNC_STARTS) and cur_indent <= def_indent:
+                if (
+                    any(s2.startswith(fs) for fs in _FUNC_STARTS)
+                    and cur_indent <= def_indent
+                ):
                     func_end = j
                     break
             break

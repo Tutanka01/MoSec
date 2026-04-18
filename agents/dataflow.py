@@ -166,12 +166,12 @@ class DataFlowAgent:
                         spec.cwe,
                     )
             except Exception as exc:
-                logger.error(
-                    "Phase 3 | error on finding %s: %s", spec.finding_id, exc
-                )
+                logger.error("Phase 3 | error on finding %s: %s", spec.finding_id, exc)
 
         out = self.output_dir / "confirmed_flows.json"
-        out.write_text(json.dumps([f.model_dump() for f in confirmed], indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps([f.model_dump() for f in confirmed], indent=2), encoding="utf-8"
+        )
         logger.info("Confirmed flows written → %s  (%d flows)", out, len(confirmed))
         return confirmed
 
@@ -201,27 +201,36 @@ class DataFlowAgent:
             if action != "conclude" and (action, param) in played:
                 logger.debug(
                     "Phase 3 | iter %d dedup  action=%s param=%r — skipping",
-                    iteration, action, param,
+                    iteration,
+                    action,
+                    param,
                 )
                 # Inject a synthetic observation so the LLM sees why it was skipped
-                evidence.append(VerificationEvidence(
-                    iteration=iteration,
-                    action=f"DEDUP:{action}({param})",
-                    result="Action already performed — no new information.",
-                    conclusion="",
-                ))
+                evidence.append(
+                    VerificationEvidence(
+                        iteration=iteration,
+                        action=f"DEDUP:{action}({param})",
+                        result="Action already performed — no new information.",
+                        conclusion="",
+                    )
+                )
                 continue
 
             # --- Act ---
             structured: StructuredEvidence | None = None
             if action == "conclude":
-                obs, structured = step.reasoning, StructuredEvidence(
-                    kind="conclude", summary=step.reasoning[:400]
+                obs, structured = (
+                    step.reasoning,
+                    StructuredEvidence(kind="conclude", summary=step.reasoning[:400]),
                 )
             elif action == "run_semgrep":
                 obs, structured = self._act_semgrep(spec, semgrep)
             elif action == "grep_sanitizers":
-                pattern = param or "|".join(spec.sanitizers) or r"(validate|sanitize|escape|quote|encode)"
+                pattern = (
+                    param
+                    or "|".join(spec.sanitizers)
+                    or r"(validate|sanitize|escape|quote|encode)"
+                )
                 obs, structured = self._act_grep(spec.file, pattern)
             elif action == "read_context":
                 obs, structured = self._act_read_context(spec.file, spec.line, param)
@@ -244,7 +253,10 @@ class DataFlowAgent:
             evidence.append(ev)
             logger.debug(
                 "Phase 3 | iter %d/%d  action=%s  confidence=%.2f",
-                iteration, _MAX_ITERATIONS, action, step.confidence,
+                iteration,
+                _MAX_ITERATIONS,
+                action,
+                step.confidence,
             )
 
             if action == "conclude" or iteration == _MAX_ITERATIONS:
@@ -252,6 +264,7 @@ class DataFlowAgent:
 
         # --- Final verdict via VerifierAgent (imported lazily to avoid circular dep) ---
         from agents.verifier import VerifierAgent  # noqa: PLC0415
+
         verifier = VerifierAgent(self.llm, consistency_n=self._consistency_n)
         verdict, verdict_reasoning = verifier.verify(spec, evidence)
 
@@ -295,8 +308,7 @@ class DataFlowAgent:
         )
 
         played_text = (
-            "\n".join(f"  {a}({p})" for a, p in sorted(played))
-            or "  (none yet)"
+            "\n".join(f"  {a}({p})" for a, p in sorted(played)) or "  (none yet)"
         )
 
         prompt = _REASON_PROMPT.format(
@@ -314,7 +326,7 @@ class DataFlowAgent:
         )
 
         last_err: str = ""
-        for attempt in range(2):   # 1 retry on validation failure
+        for attempt in range(2):  # 1 retry on validation failure
             content, _ = self.llm.chat(
                 [{"role": "user", "content": prompt}],
                 max_tokens=512,
@@ -354,7 +366,9 @@ class DataFlowAgent:
                     )
 
         # Both attempts failed — return safe default
-        logger.warning("Phase 3 | ReActStep validation failed after retry: %s", last_err)
+        logger.warning(
+            "Phase 3 | ReActStep validation failed after retry: %s", last_err
+        )
         return ReActStep(
             reasoning="Schema validation failed after retry.",
             action="conclude",
@@ -385,17 +399,24 @@ class DataFlowAgent:
             end_line = r.get("end", {}).get("line", start_line)
             msg_text = r.get("extra", {}).get("message", "")
             snippet = r.get("extra", {}).get("lines", "")[:200]
-            hits.append(CodeLocation(
-                file=file_, line_start=start_line, line_end=end_line, snippet=snippet
-            ))
+            hits.append(
+                CodeLocation(
+                    file=file_,
+                    line_start=start_line,
+                    line_end=end_line,
+                    snippet=snippet,
+                )
+            )
             snippets.append(f"  {file_}:{start_line} — {msg_text}")
 
-        summary = f"Semgrep matched {len(results)} location(s):\n" + "\n".join(snippets[:5])
-        return summary, StructuredEvidence(kind="semgrep_matches", hits=hits, summary=summary)
+        summary = f"Semgrep matched {len(results)} location(s):\n" + "\n".join(
+            snippets[:5]
+        )
+        return summary, StructuredEvidence(
+            kind="semgrep_matches", hits=hits, summary=summary
+        )
 
-    def _act_grep(
-        self, file_path: str, pattern: str
-    ) -> tuple[str, StructuredEvidence]:
+    def _act_grep(self, file_path: str, pattern: str) -> tuple[str, StructuredEvidence]:
         try:
             lines = Path(file_path).read_text(errors="replace").splitlines()
         except OSError:
@@ -411,18 +432,26 @@ class DataFlowAgent:
         match_lines: list[str] = []
         for i, line in enumerate(lines, 1):
             if compiled.search(line):
-                hits.append(CodeLocation(
-                    file=file_path, line_start=i, line_end=i,
-                    snippet=line.rstrip()[:200],
-                ))
+                hits.append(
+                    CodeLocation(
+                        file=file_path,
+                        line_start=i,
+                        line_end=i,
+                        snippet=line.rstrip()[:200],
+                    )
+                )
                 match_lines.append(f"  line {i}: {line.rstrip()[:120]}")
 
         if not hits:
             msg = f"No matches for pattern '{pattern}' in {file_path}."
             return msg, StructuredEvidence(kind="no_flow", summary=msg)
 
-        summary = f"Found {len(hits)} match(es) for '{pattern}':\n" + "\n".join(match_lines[:10])
-        return summary, StructuredEvidence(kind="grep_hits", hits=hits[:10], summary=summary)
+        summary = f"Found {len(hits)} match(es) for '{pattern}':\n" + "\n".join(
+            match_lines[:10]
+        )
+        return summary, StructuredEvidence(
+            kind="grep_hits", hits=hits[:10], summary=summary
+        )
 
     def _act_read_context(
         self, file_path: str, center: int, param: str
@@ -458,7 +487,8 @@ class DataFlowAgent:
             snippet=text[:500],
         )
         return text, StructuredEvidence(
-            kind="code_slice", hits=[loc],
+            kind="code_slice",
+            hits=[loc],
             summary=f"Read lines {start + 1}–{end} of {file_path}",
         )
 
@@ -496,9 +526,14 @@ select call, "Call to {sink_name} at " + call.getLocation().toString()
             return msg, StructuredEvidence(kind="no_flow", summary=msg)
 
         snippets = [f"  {str(r)[:200]}" for r in rows[:5]]
-        summary = f"CodeQL found {len(rows)} reference(s) to '{sink_name}':\n" + "\n".join(snippets)
+        summary = (
+            f"CodeQL found {len(rows)} reference(s) to '{sink_name}':\n"
+            + "\n".join(snippets)
+        )
         hits = [
             CodeLocation(file=spec.file, line_start=0, line_end=0, snippet=str(r)[:200])
             for r in rows[:10]
         ]
-        return summary, StructuredEvidence(kind="codeql_paths", hits=hits, summary=summary)
+        return summary, StructuredEvidence(
+            kind="codeql_paths", hits=hits, summary=summary
+        )

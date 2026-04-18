@@ -150,9 +150,7 @@ class VerifierAgent:
 
         winner, count = Counter(verdicts).most_common(1)[0]
         # Pick the reasoning from the first run that produced the winner
-        winning_reasoning = next(
-            r for v, r in zip(verdicts, reasonings) if v == winner
-        )
+        winning_reasoning = next(r for v, r in zip(verdicts, reasonings) if v == winner)
         logger.info(
             "Phase 3 | verifier majority vote: %s (%d/%d)", winner, count, self._n
         )
@@ -173,7 +171,9 @@ class VerifierAgent:
         initial_verdict, initial_reasoning = self._propose(spec, evidence_text)
 
         # Stage 2 — Falsify (adversarial critique)
-        rebuttals = self._falsify(spec, evidence_text, initial_verdict, initial_reasoning)
+        rebuttals = self._falsify(
+            spec, evidence_text, initial_verdict, initial_reasoning
+        )
 
         # Stage 3 — Decide (weigh both sides, default to unreachable)
         final_verdict, final_reasoning = self._decide(
@@ -186,9 +186,7 @@ class VerifierAgent:
     # Stage implementations
     # ------------------------------------------------------------------
 
-    def _propose(
-        self, spec: TaintSpec, evidence_text: str
-    ) -> tuple[str, str]:
+    def _propose(self, spec: TaintSpec, evidence_text: str) -> tuple[str, str]:
         prompt = _PROPOSE_PROMPT.format(
             file=spec.file,
             line=spec.line,
@@ -202,7 +200,7 @@ class VerifierAgent:
         try:
             content, _ = self.llm.chat(
                 [{"role": "user", "content": prompt}],
-                max_tokens=1024,   # raised: reasoning can be verbose
+                max_tokens=1024,  # raised: reasoning can be verbose
                 temperature=0.1,
             )
             data = self._extract_dict(content)
@@ -210,7 +208,9 @@ class VerifierAgent:
             reasoning = str(data.get("reasoning", ""))
             return verdict, reasoning
         except Exception as exc:
-            logger.warning("Verifier propose failed: %s — defaulting to unreachable", exc)
+            logger.warning(
+                "Verifier propose failed: %s — defaulting to unreachable", exc
+            )
             return "unreachable", f"Propose stage failed: {exc}"
 
     def _falsify(
@@ -221,7 +221,9 @@ class VerifierAgent:
         reasoning: str,
     ) -> list[str]:
         # Pass only a concise evidence digest — the full text was already in Propose
-        short_evidence = evidence_text[:800] + ("\n  ...[truncated]" if len(evidence_text) > 800 else "")
+        short_evidence = evidence_text[:800] + (
+            "\n  ...[truncated]" if len(evidence_text) > 800 else ""
+        )
         prompt = _FALSIFY_PROMPT.format(
             verdict=verdict,
             reasoning=reasoning[:400],
@@ -262,7 +264,9 @@ class VerifierAgent:
             else "  (no rebuttals — reviewer found the evidence solid)"
         )
         # Decide only needs the verdict, brief reasoning, and rebuttals — not full evidence
-        short_evidence = evidence_text[:600] + ("\n  ...[truncated]" if len(evidence_text) > 600 else "")
+        short_evidence = evidence_text[:600] + (
+            "\n  ...[truncated]" if len(evidence_text) > 600 else ""
+        )
         prompt = _DECIDE_PROMPT.format(
             verdict=initial_verdict,
             reasoning=initial_reasoning[:400],
@@ -278,7 +282,7 @@ class VerifierAgent:
         try:
             content, _ = self.llm.chat(
                 [{"role": "user", "content": prompt}],
-                max_tokens=512,   # raised from 256: verdict + reasoning must fit
+                max_tokens=512,  # raised from 256: verdict + reasoning must fit
                 temperature=0.0,
             )
             data = self._extract_dict(content)
@@ -317,7 +321,9 @@ class VerifierAgent:
         v = str(raw).strip().lower()
         if v in ("confirmed", "sanitized", "unreachable"):
             return v
-        logger.warning("Verifier: unexpected verdict value %r — defaulting to unreachable", raw)
+        logger.warning(
+            "Verifier: unexpected verdict value %r — defaulting to unreachable", raw
+        )
         return "unreachable"
 
     @staticmethod
@@ -337,5 +343,7 @@ class VerifierAgent:
             parts.append(f"  [{e.iteration}] {e.action}: {obs}")
         joined = "\n".join(parts) if parts else "  (no evidence gathered)"
         if len(joined) > 1500:
-            joined = joined[:1500] + "\n  ...[evidence truncated — see confirmed_flows.json]"
+            joined = (
+                joined[:1500] + "\n  ...[evidence truncated — see confirmed_flows.json]"
+            )
         return joined

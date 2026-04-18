@@ -31,7 +31,8 @@ class SemgrepRunner:
         cmd = [
             "semgrep",
             "scan",
-            "--config", rule_path,
+            "--config",
+            rule_path,
             "--json",
             "--no-git-ignore",
             "--quiet",
@@ -47,7 +48,9 @@ class SemgrepRunner:
             # Semgrep exits 0 (no findings) or 1 (findings found); anything else
             # is an error.
             if result.returncode not in (0, 1):
-                logger.error("Semgrep error (rc=%d): %s", result.returncode, result.stderr[:500])
+                logger.error(
+                    "Semgrep error (rc=%d): %s", result.returncode, result.stderr[:500]
+                )
                 return []
             data = json.loads(result.stdout)
             return data.get("results", [])
@@ -84,9 +87,19 @@ class SemgrepRunner:
         results: list[tuple[str, int, str]] = []
         try:
             proc = subprocess.run(
-                ["grep", "-rn", "--include=*.py", "--include=*.js",
-                 "--include=*.ts", "--include=*.php", pattern, self.repo_path],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "grep",
+                    "-rn",
+                    "--include=*.py",
+                    "--include=*.js",
+                    "--include=*.ts",
+                    "--include=*.php",
+                    pattern,
+                    self.repo_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             for line in proc.stdout.splitlines():
                 # format: path:lineno:content
@@ -104,12 +117,12 @@ class SemgrepRunner:
 
 # Semgrep patterns per sink kind — $TAINT is the metavariable for taint tracking
 _SINK_KIND_PATTERNS: dict[str, str] = {
-    "call":                 "{base}(...)",
-    "method_call":          "$X.{base}(...)",
-    "property_assignment":  "$X.{base} = $TAINT",
+    "call": "{base}(...)",
+    "method_call": "$X.{base}(...)",
+    "property_assignment": "$X.{base} = $TAINT",
     "subscript_assignment": "$X[...] = $TAINT",
-    "template_interp":      "`...${{...}}...`",
-    "identifier":           "{base}",
+    "template_interp": "`...${{...}}...`",
+    "identifier": "{base}",
 }
 
 _LANG_MAP: dict[str, str] = {
@@ -136,7 +149,7 @@ def _semgrep_base_name(ref: str) -> str:
     for ch in ref:
         if ch == "(":
             if paren_depth == 0:
-                break           # stop at first open paren — everything before is the base
+                break  # stop at first open paren — everything before is the base
             paren_depth += 1
             base_chars.append(ch)
         elif ch == ")":
@@ -222,9 +235,9 @@ def _validate_semgrep_rule(yaml_text: str, rule_id: str) -> bool:
             return False
         return True
     except FileNotFoundError:
-        return True   # semgrep not in PATH — skip validation, don't block the pipeline
+        return True  # semgrep not in PATH — skip validation, don't block the pipeline
     except subprocess.TimeoutExpired:
-        return True   # validation timed out — optimistically pass
+        return True  # validation timed out — optimistically pass
     finally:
         try:
             Path(tmp_path).unlink(missing_ok=True)
@@ -232,7 +245,7 @@ def _validate_semgrep_rule(yaml_text: str, rule_id: str) -> bool:
             pass
 
 
-_IDENT_RE = re.compile(r'^[a-zA-Z_$][\w$.]*$')
+_IDENT_RE = re.compile(r"^[a-zA-Z_$][\w$.]*$")
 
 
 def _is_semgrep_safe(name: str) -> bool:
@@ -272,7 +285,8 @@ def generate_semgrep_rule(
     if not _is_semgrep_safe(source_bare) or not _is_semgrep_safe(sink_bare):
         logger.debug(
             "Semgrep: non-identifier source/sink ('%s'/'%s') → regex fallback immediately",
-            source_bare, sink_bare,
+            source_bare,
+            sink_bare,
         )
         return (
             f"rules:\n"
@@ -381,7 +395,8 @@ class CodeQLRunner:
 
         cmd = [
             self.codeql_bin,
-            "database", "create",
+            "database",
+            "create",
             db_path,
             f"--language={language}",
             f"--source-root={repo_path}",
@@ -389,7 +404,10 @@ class CodeQLRunner:
         ]
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=600,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
             )
             if result.returncode != 0:
                 logger.error("CodeQL create failed: %s", result.stderr[:500])
@@ -422,22 +440,32 @@ class CodeQLRunner:
 
         try:
             run_cmd = [
-                self.codeql_bin, "query", "run",
-                "--database", db_path,
-                "--output", bqrs_path,
+                self.codeql_bin,
+                "query",
+                "run",
+                "--database",
+                db_path,
+                "--output",
+                bqrs_path,
                 ql_path,
             ]
-            result = subprocess.run(run_cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(
+                run_cmd, capture_output=True, text=True, timeout=120
+            )
             if result.returncode != 0:
                 logger.debug("CodeQL query failed: %s", result.stderr[:300])
                 return []
 
             decode_cmd = [
-                self.codeql_bin, "bqrs", "decode",
+                self.codeql_bin,
+                "bqrs",
+                "decode",
                 "--format=json",
                 bqrs_path,
             ]
-            decode = subprocess.run(decode_cmd, capture_output=True, text=True, timeout=30)
+            decode = subprocess.run(
+                decode_cmd, capture_output=True, text=True, timeout=30
+            )
             if decode.returncode != 0:
                 return []
 

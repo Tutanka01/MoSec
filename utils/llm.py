@@ -152,7 +152,9 @@ class LLMClient:
         if fenced != text:
             text = fenced
             if not text:
-                raise EmptyResponseError("LLM returned an empty response (empty fenced block)")
+                raise EmptyResponseError(
+                    "LLM returned an empty response (empty fenced block)"
+                )
         elif re.match(r"^```(?:\w+)?\s*\n?", text):
             # Opening fence without closing fence — strip the opener and continue
             text = re.sub(r"^```(?:\w+)?\s*\n?", "", text).strip()
@@ -179,7 +181,7 @@ class LLMClient:
 
         # 4. Fix common LLM mistakes (trailing commas, single quotes)
         cleaned = re.sub(r",\s*([}\]])", r"\1", text)  # trailing commas
-        cleaned = cleaned.replace("'", '"')             # single → double quotes
+        cleaned = cleaned.replace("'", '"')  # single → double quotes
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
@@ -187,7 +189,7 @@ class LLMClient:
 
         # 5. Repair truncated JSON — model hit token limit mid-response.
         #    Try appending the most common closing suffixes.
-        for suffix in ('"}', '"}', '}', '"}}'):
+        for suffix in ('"}', '"}', "}", '"}}'):
             try:
                 return json.loads(text + suffix)
             except json.JSONDecodeError:
@@ -200,11 +202,17 @@ class LLMClient:
             for m in re.finditer(r'"(\w+)"\s*:\s*"([^"]*)"', text):
                 pairs[m.group(1)] = m.group(2)
             for m in re.finditer(r'"(\w+)"\s*:\s*(-?\d+(?:\.\d+)?)', text):
-                pairs[m.group(1)] = float(m.group(2)) if "." in m.group(2) else int(m.group(2))
+                pairs[m.group(1)] = (
+                    float(m.group(2)) if "." in m.group(2) else int(m.group(2))
+                )
             for m in re.finditer(r'"(\w+)"\s*:\s*(true|false|null)', text):
-                pairs[m.group(1)] = {"true": True, "false": False, "null": None}[m.group(2)]
+                pairs[m.group(1)] = {"true": True, "false": False, "null": None}[
+                    m.group(2)
+                ]
             if pairs:
-                logger.debug("extract_json: rescued %d field(s) from truncated JSON", len(pairs))
+                logger.debug(
+                    "extract_json: rescued %d field(s) from truncated JSON", len(pairs)
+                )
                 return pairs
 
         raise ValueError(

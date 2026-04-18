@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+
 @app.route("/user")
 def get_user():
     user_id = request.args.get("id")

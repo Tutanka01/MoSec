@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import tempfile
 from pathlib import Path
 
 from models.schemas import ASTCandidate, FileFinding, TaintSpec
@@ -68,7 +69,7 @@ class TaintSpecAgent:
         self,
         llm: LLMClient,
         output_dir: str,
-        rules_dir: str = "/tmp/audit_rules",
+        rules_dir: str = str(Path(tempfile.gettempdir()) / "audit_rules"),
     ) -> None:
         self.llm = llm
         self.output_dir = Path(output_dir)
@@ -100,7 +101,9 @@ class TaintSpecAgent:
                 )
 
         out = self.output_dir / "taint_specs.json"
-        out.write_text(json.dumps([s.model_dump() for s in specs], indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps([s.model_dump() for s in specs], indent=2), encoding="utf-8"
+        )
         logger.info("Taint specs written → %s  (%d specs)", out, len(specs))
         return specs
 
@@ -196,6 +199,7 @@ class TaintSpecAgent:
         """Run AST extraction and return source/sink candidates (Lot C)."""
         try:
             from utils.ast_extractor import TaintCandidateExtractor  # noqa: PLC0415
+
             extractor = TaintCandidateExtractor()
             return extractor.extract(
                 file_path=finding.file,
@@ -273,7 +277,12 @@ class TaintSpecAgent:
         data.setdefault("sink_line", None)
 
         # Validate sink_kind
-        valid_kinds = {"call", "method_call", "property_assignment", "subscript_assignment"}
+        valid_kinds = {
+            "call",
+            "method_call",
+            "property_assignment",
+            "subscript_assignment",
+        }
         if data["sink_kind"] not in valid_kinds:
             data["sink_kind"] = "call"
 
@@ -285,7 +294,9 @@ class TaintSpecAgent:
             logger.debug(
                 "Phase 2 | expression sink detected %r — substituting callable", sink
             )
-            data["sink"] = _infer_callable_sink(sink, data.get("taint_path_summary", ""))
+            data["sink"] = _infer_callable_sink(
+                sink, data.get("taint_path_summary", "")
+            )
             data["sink_kind"] = "call"
 
         return data
@@ -293,33 +304,37 @@ class TaintSpecAgent:
 
 _EXPR_SINK_RE = re.compile(r'["\'{`<>]')
 
+
 def _is_named_callable(sink: str) -> bool:
     """Return True when sink is a plain dotted identifier (callable or property name)."""
     bare = sink.split("(")[0].strip()
-    return bool(re.match(r'^[a-zA-Z_$][\w$.]*$', bare)) and not _EXPR_SINK_RE.search(bare)
+    return bool(re.match(r"^[a-zA-Z_$][\w$.]*$", bare)) and not _EXPR_SINK_RE.search(
+        bare
+    )
 
 
 _SINK_KEYWORDS_TO_CALLABLE: list[tuple[str, str]] = [
     # XSS — HTML response functions
-    ("make_response",       "make_response"),
-    ("render_template",     "render_template_string"),
-    ("Response(",           "Response"),
-    ("send(",               "res.send"),
-    ("res.send",            "res.send"),
-    ("write(",              "res.write"),
-    ("echo",                "echo"),
-    ("innerHTML",           "innerHTML"),
+    ("make_response", "make_response"),
+    ("render_template", "render_template_string"),
+    ("Response(", "Response"),
+    ("send(", "res.send"),
+    ("res.send", "res.send"),
+    ("write(", "res.write"),
+    ("echo", "echo"),
+    ("innerHTML", "innerHTML"),
     # SQLi
-    ("execute(",            "cursor.execute"),
-    ("query(",              "cursor.query"),
+    ("execute(", "cursor.execute"),
+    ("query(", "cursor.query"),
     # CmdI
-    ("system(",             "os.system"),
-    ("exec(",               "exec"),
-    ("shell_exec",          "shell_exec"),
+    ("system(", "os.system"),
+    ("exec(", "exec"),
+    ("shell_exec", "shell_exec"),
     # Path traversal
-    ("open(",               "open"),
-    ("file_get_contents",   "file_get_contents"),
+    ("open(", "open"),
+    ("file_get_contents", "file_get_contents"),
 ]
+
 
 def _infer_callable_sink(expr: str, summary: str) -> str:
     """

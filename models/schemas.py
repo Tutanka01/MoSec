@@ -39,8 +39,13 @@ class StructuredEvidence(BaseModel):
     """Rich evidence record replacing the raw-string result field (Lot D)."""
 
     kind: Literal[
-        "semgrep_matches", "grep_hits", "code_slice",
-        "codeql_paths", "no_flow", "conclude", "unknown",
+        "semgrep_matches",
+        "grep_hits",
+        "code_slice",
+        "codeql_paths",
+        "no_flow",
+        "conclude",
+        "unknown",
     ]
     hits: list[CodeLocation] = Field(default_factory=list)
     summary: str
@@ -210,19 +215,19 @@ class ValidatedVuln(BaseModel):
 
 
 class CVSSMetrics(BaseModel):
-    attack_vector: str       # N | A | L | P
-    attack_complexity: str   # L | H
-    privileges_required: str # N | L | H
-    user_interaction: str    # N | R
-    scope: str               # U | C
-    confidentiality: str     # N | L | H
-    integrity: str           # N | L | H
-    availability: str        # N | L | H
+    attack_vector: str  # N | A | L | P
+    attack_complexity: str  # L | H
+    privileges_required: str  # N | L | H
+    user_interaction: str  # N | R
+    scope: str  # U | C
+    confidentiality: str  # N | L | H
+    integrity: str  # N | L | H
+    availability: str  # N | L | H
 
 
 class CVSSScore(BaseModel):
     base_score: float
-    severity: str        # NONE | LOW | MEDIUM | HIGH | CRITICAL
+    severity: str  # NONE | LOW | MEDIUM | HIGH | CRITICAL
     vector_string: str
     metrics: CVSSMetrics
 
@@ -259,8 +264,8 @@ class PipelineReport(BaseModel):
 
 _AV = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.20}
 _AC = {"L": 0.77, "H": 0.44}
-_PR_U = {"N": 0.85, "L": 0.62, "H": 0.27}   # Scope Unchanged
-_PR_C = {"N": 0.85, "L": 0.50, "H": 0.50}   # Scope Changed
+_PR_U = {"N": 0.85, "L": 0.62, "H": 0.27}  # Scope Unchanged
+_PR_C = {"N": 0.85, "L": 0.50, "H": 0.50}  # Scope Changed
 _UI = {"N": 0.85, "R": 0.62}
 _IMP = {"N": 0.00, "L": 0.22, "H": 0.56}
 
@@ -281,7 +286,9 @@ def _roundup(value: float) -> float:
 def calculate_cvss31(m: CVSSMetrics) -> CVSSScore:
     av = _AV[m.attack_vector]
     ac = _AC[m.attack_complexity]
-    pr = _PR_C[m.privileges_required] if m.scope == "C" else _PR_U[m.privileges_required]
+    pr = (
+        _PR_C[m.privileges_required] if m.scope == "C" else _PR_U[m.privileges_required]
+    )
     ui = _UI[m.user_interaction]
     c = _IMP[m.confidentiality]
     i = _IMP[m.integrity]

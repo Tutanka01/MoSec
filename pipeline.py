@@ -169,7 +169,9 @@ def run_pipeline(
     else:
         manifest = _load_manifest(output_dir)
         if manifest is None:
-            logger.error("Cannot resume from phase %d: manifest.json missing", start_phase)
+            logger.error(
+                "Cannot resume from phase %d: manifest.json missing", start_phase
+            )
             return None
         logger.info("Phase 0 skipped — loaded manifest.json")
 
@@ -183,12 +185,16 @@ def run_pipeline(
     else:
         findings = _load_findings(output_dir)
         if findings is None:
-            logger.error("Cannot resume from phase %d: findings.json missing", start_phase)
+            logger.error(
+                "Cannot resume from phase %d: findings.json missing", start_phase
+            )
             return None
         logger.info("Phase 1 skipped — loaded %d findings", len(findings))
 
     if not findings:
-        logger.info("No findings above confidence threshold — pipeline complete (clean repo).")
+        logger.info(
+            "No findings above confidence threshold — pipeline complete (clean repo)."
+        )
         _write_clean_report(output_dir, manifest)
         return None
 
@@ -202,7 +208,9 @@ def run_pipeline(
     else:
         taint_specs = _load_taint_specs(output_dir)
         if taint_specs is None:
-            logger.error("Cannot resume from phase %d: taint_specs.json missing", start_phase)
+            logger.error(
+                "Cannot resume from phase %d: taint_specs.json missing", start_phase
+            )
             return None
         logger.info("Phase 2 skipped — loaded %d taint specs", len(taint_specs))
 
@@ -227,12 +235,16 @@ def run_pipeline(
     else:
         confirmed_flows = _load_confirmed_flows(output_dir)
         if confirmed_flows is None:
-            logger.error("Cannot resume from phase %d: confirmed_flows.json missing", start_phase)
+            logger.error(
+                "Cannot resume from phase %d: confirmed_flows.json missing", start_phase
+            )
             return None
         logger.info("Phase 3 skipped — loaded %d confirmed flows", len(confirmed_flows))
 
     if not confirmed_flows:
-        logger.info("No flows survived verification — pipeline complete (all sanitized/unreachable).")
+        logger.info(
+            "No flows survived verification — pipeline complete (all sanitized/unreachable)."
+        )
         return None
 
     # ── Phase 4 — Exploit Hypothesis ────────────────────────────────────
@@ -245,7 +257,9 @@ def run_pipeline(
     else:
         validated_vulns = _load_validated_vulns(output_dir)
         if validated_vulns is None:
-            logger.error("Cannot resume from phase %d: validated_vulns.json missing", start_phase)
+            logger.error(
+                "Cannot resume from phase %d: validated_vulns.json missing", start_phase
+            )
             return None
         logger.info("Phase 4 skipped — loaded %d validated vulns", len(validated_vulns))
 
@@ -276,7 +290,9 @@ def run_pipeline(
         tok["total_completion_tokens"],
         tok["total_tokens"],
     )
-    (output_dir / "token_usage.json").write_text(json.dumps(tok, indent=2), encoding="utf-8")
+    (output_dir / "token_usage.json").write_text(
+        json.dumps(tok, indent=2), encoding="utf-8"
+    )
 
     # ── Clean up Semgrep rules unless --keep-rules ───────────────────────
     if not keep_rules:
@@ -315,7 +331,9 @@ def _write_clean_report(output_dir: Path, manifest: RepositoryManifest) -> None:
             }
         ],
     }
-    (output_dir / "results.sarif").write_text(json.dumps(sarif, indent=2), encoding="utf-8")
+    (output_dir / "results.sarif").write_text(
+        json.dumps(sarif, indent=2), encoding="utf-8"
+    )
     (output_dir / "report.md").write_text(
         "# MoSec SAST Security Report\n\nNo exploitable vulnerabilities found.\n",
         encoding="utf-8",

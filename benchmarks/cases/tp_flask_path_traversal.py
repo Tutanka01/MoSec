@@ -5,6 +5,7 @@ from flask import Flask, request
 app = Flask(__name__)
 BASE_DIR = "/var/app/files"
 
+
 @app.route("/read")
 def read_file():
     filename = request.args.get("filename")

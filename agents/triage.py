@@ -54,9 +54,7 @@ class TriageAgent:
             try:
                 findings = self._analyse_file(file_path, manifest.repo_path)
                 all_findings.extend(findings)
-                logger.info(
-                    "Phase 1 | %s → %d finding(s)", file_path, len(findings)
-                )
+                logger.info("Phase 1 | %s → %d finding(s)", file_path, len(findings))
             except Exception as exc:
                 logger.error("Phase 1 | error on %s: %s", file_path, exc)
 
@@ -127,9 +125,7 @@ class TriageAgent:
     # Response parsing
     # ------------------------------------------------------------------
 
-    def _parse_llm_response(
-        self, content: str, file_path: str
-    ) -> list[FileFinding]:
+    def _parse_llm_response(self, content: str, file_path: str) -> list[FileFinding]:
         try:
             raw = self.llm.extract_json(content)
         except EmptyResponseError:
@@ -192,6 +188,5 @@ class TriageAgent:
     @staticmethod
     def _number_lines(code: str) -> str:
         return "\n".join(
-            f"{i + 1:5d}  {line}"
-            for i, line in enumerate(code.splitlines())
+            f"{i + 1:5d}  {line}" for i, line in enumerate(code.splitlines())
         )

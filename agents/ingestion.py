@@ -211,7 +211,8 @@ class IngestionAgent:
             logger.debug("tree-sitter parsers initialised (py, js)")
         except Exception as exc:
             logger.warning(
-                "tree-sitter (py/js) unavailable (%s) — AST summaries will be empty", exc
+                "tree-sitter (py/js) unavailable (%s) — AST summaries will be empty",
+                exc,
             )
 
         try:
@@ -221,7 +222,9 @@ class IngestionAgent:
             self._php_parser = Parser(Language(tsphp.language_php()))
             logger.debug("tree-sitter PHP parser initialised")
         except Exception as exc:
-            logger.warning("tree-sitter-php unavailable (%s) — PHP AST summaries skipped", exc)
+            logger.warning(
+                "tree-sitter-php unavailable (%s) — PHP AST summaries skipped", exc
+            )
 
     # ------------------------------------------------------------------
     # File collection
@@ -230,8 +233,16 @@ class IngestionAgent:
     def _collect_files(self, repo: Path) -> list[Path]:
         _EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".php"}
         _SKIP = {
-            "node_modules", ".git", "__pycache__", ".venv", "venv",
-            "dist", "build", ".tox", ".eggs", "site-packages",
+            "node_modules",
+            ".git",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+            ".tox",
+            ".eggs",
+            "site-packages",
             "vendor",  # PHP Composer vendor dir
         }
         files: list[Path] = []
@@ -249,9 +260,7 @@ class IngestionAgent:
     # AST summaries
     # ------------------------------------------------------------------
 
-    def _build_ast_summaries(
-        self, files: list[Path], repo: Path
-    ) -> list[ASTSummary]:
+    def _build_ast_summaries(self, files: list[Path], repo: Path) -> list[ASTSummary]:
         summaries: list[ASTSummary] = []
         for f in files:
             try:
@@ -263,7 +272,11 @@ class IngestionAgent:
         return summaries
 
     def _analyse_file_ast(self, path: Path, repo: Path) -> Optional[ASTSummary]:
-        if self._py_parser is None and self._js_parser is None and self._php_parser is None:
+        if (
+            self._py_parser is None
+            and self._js_parser is None
+            and self._php_parser is None
+        ):
             return None
 
         rel = str(path.relative_to(repo))
@@ -310,7 +323,9 @@ class IngestionAgent:
                 walk(child)
 
         walk(tree.root_node)
-        return ASTSummary(file=rel, functions=functions, classes=classes, imports=imports)
+        return ASTSummary(
+            file=rel, functions=functions, classes=classes, imports=imports
+        )
 
     @staticmethod
     def _summarise_php_tree(tree, rel: str) -> ASTSummary:
@@ -334,15 +349,15 @@ class IngestionAgent:
                 walk(child)
 
         walk(tree.root_node)
-        return ASTSummary(file=rel, functions=functions, classes=classes, imports=imports)
+        return ASTSummary(
+            file=rel, functions=functions, classes=classes, imports=imports
+        )
 
     # ------------------------------------------------------------------
     # Entry point extraction (regex-based, per-line)
     # ------------------------------------------------------------------
 
-    def _extract_entry_points(
-        self, files: list[Path], repo: Path
-    ) -> list[EntryPoint]:
+    def _extract_entry_points(self, files: list[Path], repo: Path) -> list[EntryPoint]:
         entry_points: list[EntryPoint] = []
         for f in files:
             if f.suffix == ".py":
@@ -452,7 +467,9 @@ class IngestionAgent:
             data: dict = json.loads(path.read_text(encoding="utf-8"))
             for section in ("dependencies", "devDependencies", "peerDependencies"):
                 for name, version in data.get(section, {}).items():
-                    deps.append(Dependency(name=name, version=str(version), ecosystem="npm"))
+                    deps.append(
+                        Dependency(name=name, version=str(version), ecosystem="npm")
+                    )
         except Exception as exc:
             logger.debug("package.json parse skipped: %s", exc)
         return deps
@@ -463,8 +480,9 @@ class IngestionAgent:
 
     def _build_codeql_database(self, repo: Path) -> Optional[str]:
         has_py = any(repo.rglob("*.py"))
-        has_js = any(p for p in repo.rglob("*")
-                     if p.suffix in {".js", ".ts", ".jsx", ".tsx"})
+        has_js = any(
+            p for p in repo.rglob("*") if p.suffix in {".js", ".ts", ".jsx", ".tsx"}
+        )
         has_php = any(repo.rglob("*.php"))
 
         if has_py:

@@ -45,7 +45,7 @@ class BenchmarkCase:
     name: str
     code_path: Path
     expected_path: Path
-    label: str             # TP | FP | TN
+    label: str  # TP | FP | TN
     should_validate: bool
     cwe: str
     description: str
@@ -57,7 +57,7 @@ class BenchmarkCase:
 @dataclass
 class CaseResult:
     case: BenchmarkCase
-    predicted: bool        # did the pipeline produce a validated vuln?
+    predicted: bool  # did the pipeline produce a validated vuln?
     elapsed_s: float
     error: Optional[str] = None
 
@@ -124,18 +124,20 @@ def load_cases(suite_dir: str) -> list[BenchmarkCase]:
         with expected_path.open() as fh:
             exp = json.load(fh)
 
-        cases.append(BenchmarkCase(
-            name=code_path.stem,
-            code_path=code_path,
-            expected_path=expected_path,
-            label=exp.get("label", "TP"),
-            should_validate=exp.get("should_validate", True),
-            cwe=exp.get("cwe", "CWE-UNKNOWN"),
-            description=exp.get("description", ""),
-            source_hint=exp.get("source_hint", ""),
-            sink_hint=exp.get("sink_hint", ""),
-            difficulty=exp.get("difficulty", "normal"),
-        ))
+        cases.append(
+            BenchmarkCase(
+                name=code_path.stem,
+                code_path=code_path,
+                expected_path=expected_path,
+                label=exp.get("label", "TP"),
+                should_validate=exp.get("should_validate", True),
+                cwe=exp.get("cwe", "CWE-UNKNOWN"),
+                description=exp.get("description", ""),
+                source_hint=exp.get("source_hint", ""),
+                sink_hint=exp.get("sink_hint", ""),
+                difficulty=exp.get("difficulty", "normal"),
+            )
+        )
 
     logger.info("Loaded %d benchmark cases from %s", len(cases), suite_dir)
     return cases
@@ -165,6 +167,7 @@ def _run_pipeline_on_case(case: BenchmarkCase, llm_client, output_base: Path) ->
 
     # Create a minimal manifest pointing to the single test file
     from models.schemas import RepositoryManifest
+
     manifest = RepositoryManifest(
         repo_path=str(case.code_path.parent),
         files=[str(case.code_path)],
@@ -180,7 +183,9 @@ def _run_pipeline_on_case(case: BenchmarkCase, llm_client, output_base: Path) ->
         return False
 
     # Phase 2 — TaintSpec
-    taint = TaintSpecAgent(llm=llm_client, output_dir=str(out_dir), rules_dir=str(rules_dir))
+    taint = TaintSpecAgent(
+        llm=llm_client, output_dir=str(out_dir), rules_dir=str(rules_dir)
+    )
     specs = taint.run(findings)
 
     if not specs:
@@ -206,7 +211,6 @@ def _run_pipeline_on_case(case: BenchmarkCase, llm_client, output_base: Path) ->
 
 
 class BenchmarkRunner:
-
     def __init__(self, llm_client, output_dir: str = "bench_output") -> None:
         self.llm = llm_client
         self.output_dir = Path(output_dir)
@@ -234,7 +238,9 @@ class BenchmarkRunner:
                     logger.error("Case %s error: %s", case.name, exc)
 
                 elapsed = time.monotonic() - t0
-                result = CaseResult(case=case, predicted=predicted, elapsed_s=elapsed, error=error)
+                result = CaseResult(
+                    case=case, predicted=predicted, elapsed_s=elapsed, error=error
+                )
 
                 # Accumulate metrics
                 report.total += 1
@@ -266,23 +272,29 @@ class BenchmarkRunner:
                 status = "✓" if result.correct else "✗"
                 logger.info(
                     "%s  %s  predicted=%s  expected=%s  elapsed=%.1fs",
-                    status, case.name, predicted, case.should_validate, elapsed,
+                    status,
+                    case.name,
+                    predicted,
+                    case.should_validate,
+                    elapsed,
                 )
-                report.results.append({
-                    "case": case.name,
-                    "label": case.label,
-                    "cwe": case.cwe,
-                    "difficulty": case.difficulty,
-                    "expected": case.should_validate,
-                    "predicted": predicted,
-                    "correct": result.correct,
-                    "tp": result.tp,
-                    "fp": result.fp,
-                    "tn": result.tn,
-                    "fn": result.fn,
-                    "elapsed_s": round(elapsed, 2),
-                    "error": error,
-                })
+                report.results.append(
+                    {
+                        "case": case.name,
+                        "label": case.label,
+                        "cwe": case.cwe,
+                        "difficulty": case.difficulty,
+                        "expected": case.should_validate,
+                        "predicted": predicted,
+                        "correct": result.correct,
+                        "tp": result.tp,
+                        "fp": result.fp,
+                        "tn": result.tn,
+                        "fn": result.fn,
+                        "elapsed_s": round(elapsed, 2),
+                        "error": error,
+                    }
+                )
 
         report.elapsed_s = time.monotonic() - start
 
@@ -293,7 +305,9 @@ class BenchmarkRunner:
         report.recall = report.tp / r_denom if r_denom else 0.0
         pr_sum = report.precision + report.recall
         report.f1 = 2 * report.precision * report.recall / pr_sum if pr_sum else 0.0
-        report.accuracy = (report.tp + report.tn) / report.total if report.total else 0.0
+        report.accuracy = (
+            (report.tp + report.tn) / report.total if report.total else 0.0
+        )
 
         return report
 
@@ -343,7 +357,9 @@ class BenchmarkRunner:
                 p = tp / p_d if p_d else 0.0
                 r = tp / r_d if r_d else 0.0
                 f = 2 * p * r / (p + r) if (p + r) else 0.0
-                print(f"    {cwe:20s}  P={p:.0%}  R={r:.0%}  F1={f:.0%}  (TP={tp} FP={fp} FN={fn})")
+                print(
+                    f"    {cwe:20s}  P={p:.0%}  R={r:.0%}  F1={f:.0%}  (TP={tp} FP={fp} FN={fn})"
+                )
         print()
 
 
@@ -358,21 +374,27 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     parser = argparse.ArgumentParser(description="MoSec benchmark runner")
-    parser.add_argument("--suite", default="benchmarks/cases", help="Path to benchmark cases directory")
-    parser.add_argument("--output", default="output/bench_report.json", help="Output JSON path")
+    parser.add_argument(
+        "--suite", default="benchmarks/cases", help="Path to benchmark cases directory"
+    )
+    parser.add_argument(
+        "--output", default="output/bench_report.json", help="Output JSON path"
+    )
     args = parser.parse_args()
 
     # Same defaults as pipeline.py — honours .env automatically via python-dotenv
     try:
         from dotenv import load_dotenv
+
         load_dotenv()
     except ImportError:
         pass
 
     from utils.llm import LLMClient
+
     base_url = os.environ.get("LLM_BASE_URL", "https://llm.eva.univ-pau.fr/v1")
-    api_key  = os.environ.get("LLM_API_KEY", "")
-    model    = os.environ.get("LLM_MODEL", "gemma-4-31b-it-q8_0")
+    api_key = os.environ.get("LLM_API_KEY", "")
+    model = os.environ.get("LLM_MODEL", "gemma-4-31b-it-q8_0")
     logging.getLogger(__name__).info("Benchmark LLM: %s  model=%s", base_url, model)
     llm = LLMClient(base_url=base_url, api_key=api_key, model=model)
 
