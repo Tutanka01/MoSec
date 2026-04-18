@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _TS_AVAILABLE = False
 _js_parser = None
+_php_parser = None
 
 try:
     import tree_sitter_javascript as _tsjs
@@ -39,6 +40,15 @@ try:
     _TS_AVAILABLE = True
 except Exception as _ts_err:
     logger.debug("tree-sitter-javascript not available (%s) — JS will use regex fallback", _ts_err)
+
+try:
+    import tree_sitter_php as _tsphp
+    from tree_sitter import Language as _TSLanguage, Parser as _TSParser  # noqa: F811
+
+    _PHP_LANGUAGE = _TSLanguage(_tsphp.language_php())
+    _php_parser = _TSParser(_PHP_LANGUAGE)
+except Exception as _ts_php_err:
+    logger.debug("tree-sitter-php not available (%s) — PHP will use regex fallback", _ts_php_err)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +132,65 @@ _JS_SOURCES: set[str] = {
 }
 
 _JS_SOURCE_BARE: set[str] = {s.split(".")[-1] for s in _JS_SOURCES}
+
+# ---------------------------------------------------------------------------
+# PHP sources and sinks
+# ---------------------------------------------------------------------------
+
+_PHP_SOURCES: set[str] = {
+    "$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER", "$_FILES",
+    "$_ENV", "$HTTP_RAW_POST_DATA",
+}
+
+_PHP_SOURCE_BARE: set[str] = {
+    "_GET", "_POST", "_REQUEST", "_COOKIE", "_SERVER", "_FILES", "_ENV",
+    "getallheaders", "apache_request_headers",
+}
+
+_PHP_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
+    "CWE-79":  [
+        ("echo", "call"),
+        ("print", "call"),
+        ("printf", "call"),
+        ("fprintf", "call"),
+        ("vprintf", "call"),
+        ("innerHTML", "property_assignment"),
+    ],
+    "CWE-89":  [
+        ("mysqli_query", "call"),
+        ("query", "method_call"),
+        ("exec", "method_call"),
+        ("mysqli_multi_query", "call"),
+        ("pg_query", "call"),
+    ],
+    "CWE-78":  [
+        ("exec", "call"),
+        ("system", "call"),
+        ("shell_exec", "call"),
+        ("passthru", "call"),
+        ("popen", "call"),
+        ("proc_open", "call"),
+        ("pcntl_exec", "call"),
+    ],
+    "CWE-22":  [
+        ("file_get_contents", "call"),
+        ("fopen", "call"),
+        ("include", "call"),
+        ("require", "call"),
+        ("include_once", "call"),
+        ("require_once", "call"),
+        ("readfile", "call"),
+        ("file", "call"),
+    ],
+    "CWE-502": [
+        ("unserialize", "call"),
+    ],
+    "CWE-94":  [
+        ("eval", "call"),
+        ("assert", "call"),
+        ("create_function", "call"),
+    ],
+}
 
 _JS_SINKS_BY_CWE: dict[str, list[tuple[str, str]]] = {
     "CWE-79":  [
@@ -258,6 +327,8 @@ class TaintCandidateExtractor:
             return self._extract_python(code, center_line, cwe, radius)
         elif suffix in (".js", ".jsx", ".ts", ".tsx"):
             return self._extract_js(code, center_line, cwe, radius)
+        elif suffix == ".php":
+            return self._extract_php(code, center_line, cwe, radius)
         else:
             return self._extract_regex_fallback(code, center_line, cwe, radius)
 
@@ -272,6 +343,8 @@ class TaintCandidateExtractor:
 
         if suffix == ".py":
             return self._build_python_cfg(code, center_line)
+        elif suffix == ".php":
+            return self._build_php_cfg(code, center_line)
         else:
             return self._build_generic_cfg(code, center_line)
 
@@ -485,6 +558,185 @@ class TaintCandidateExtractor:
         return candidates
 
     # ------------------------------------------------------------------
+    # PHP extraction (tree-sitter when available, regex fallback otherwise)
+    # ------------------------------------------------------------------
+
+    def _extract_php(
+        self, code: str, center_line: int, cwe: str, radius: int
+    ) -> list[ASTCandidate]:
+        sinks_for_cwe = _PHP_SINKS_BY_CWE.get(cwe, [])
+        if not sinks_for_cwe:
+            sinks_for_cwe = [item for lst in _PHP_SINKS_BY_CWE.values() for item in lst]
+
+        if _php_parser is None:
+            return self._extract_php_regex(code, center_line, cwe, radius, sinks_for_cwe)
+
+        try:
+            tree = _php_parser.parse(code.encode())
+        except Exception as exc:
+            logger.debug("PHP tree-sitter parse error: %s", exc)
+            return self._extract_php_regex(code, center_line, cwe, radius, sinks_for_cwe)
+
+        line_min = max(0, center_line - radius)
+        line_max = center_line + radius
+        candidates: list[ASTCandidate] = []
+
+        def visit(node) -> None:
+            row = node.start_point[0] + 1  # 1-indexed
+
+            if row < line_min or row > line_max:
+                for child in node.children:
+                    visit(child)
+                return
+
+            # Source: subscript access on superglobals ($_GET['x'], $_POST['x'])
+            if node.type == "subscript_expression":
+                obj = node.child_by_field_name("object") or (node.children[0] if node.children else None)
+                if obj and obj.text:
+                    obj_text = obj.text.decode(errors="replace")
+                    bare = obj_text.lstrip("$")
+                    if bare in _PHP_SOURCE_BARE or obj_text in _PHP_SOURCES:
+                        candidates.append(ASTCandidate(
+                            kind="source",
+                            name=obj_text,
+                            line=row,
+                            col=node.start_point[1],
+                            sink_kind="subscript_assignment",
+                        ))
+
+            # Source: direct superglobal variable reference
+            if node.type == "variable_name" and node.text:
+                vname = node.text.decode(errors="replace")
+                bare = vname.lstrip("$")
+                if bare in _PHP_SOURCE_BARE:
+                    candidates.append(ASTCandidate(
+                        kind="source",
+                        name=vname,
+                        line=row,
+                        col=node.start_point[1],
+                        sink_kind="call",
+                    ))
+
+            # Sink: function call (echo, system, mysqli_query, etc.)
+            if node.type in ("function_call_expression", "echo_statement"):
+                func_node = node.child_by_field_name("function") if node.type != "echo_statement" else None
+                fname = ""
+                if func_node and func_node.text:
+                    fname = func_node.text.decode(errors="replace")
+                elif node.type == "echo_statement":
+                    fname = "echo"
+
+                for sink_name, sink_kind in sinks_for_cwe:
+                    if sink_name.split(".")[-1].lower() == fname.lower():
+                        candidates.append(ASTCandidate(
+                            kind="sink",
+                            name=fname,
+                            line=row,
+                            col=node.start_point[1],
+                            sink_kind=sink_kind,
+                        ))
+                        break
+
+            # Sink: method call ($pdo->query, $mysqli->query)
+            if node.type == "member_call_expression":
+                method_node = node.child_by_field_name("name")
+                if method_node and method_node.text:
+                    method_name = method_node.text.decode(errors="replace")
+                    for sink_name, sink_kind in sinks_for_cwe:
+                        if sink_name.split(".")[-1].lower() == method_name.lower():
+                            candidates.append(ASTCandidate(
+                                kind="sink",
+                                name=method_name,
+                                line=row,
+                                col=node.start_point[1],
+                                sink_kind=sink_kind,
+                            ))
+                            break
+
+            for child in node.children:
+                visit(child)
+
+        visit(tree.root_node)
+        return candidates
+
+    def _extract_php_regex(
+        self,
+        code: str,
+        center_line: int,
+        cwe: str,
+        radius: int,
+        sinks_for_cwe: list[tuple[str, str]],
+    ) -> list[ASTCandidate]:
+        """Regex fallback for PHP when tree-sitter is unavailable."""
+        lines = code.splitlines()
+        candidates: list[ASTCandidate] = []
+
+        for i, line in enumerate(lines):
+            lineno = i + 1
+            if abs(lineno - center_line) > radius:
+                continue
+
+            # Sources
+            for bare in _PHP_SOURCE_BARE:
+                if re.search(r"\$" + re.escape(bare) + r"\b", line):
+                    candidates.append(ASTCandidate(
+                        kind="source", name=f"${bare}", line=lineno, col=0, sink_kind="call"
+                    ))
+
+            # Sinks
+            for sink_name, sink_kind in sinks_for_cwe:
+                bare = sink_name.split(".")[-1]
+                if re.search(r"\b" + re.escape(bare) + r"\b", line, re.IGNORECASE):
+                    candidates.append(ASTCandidate(
+                        kind="sink", name=sink_name, line=lineno, col=0, sink_kind=sink_kind
+                    ))
+
+        return candidates
+
+    def _build_php_cfg(self, code: str, center_line: int) -> SimpleCFG:
+        """
+        Regex-based def-use CFG for PHP.
+
+        PHP variables are $-prefixed. Assignment patterns:
+          $var = $_GET['key']           → GET source to var
+          $var = $other . $taint        → propagation
+          mysqli_query($conn, $var)     → sink use
+        """
+        cfg = SimpleCFG()
+        lines = code.splitlines()
+        func_start, func_end = _find_function_body_heuristic(lines, center_line - 1)
+        scope_lines = lines[func_start:func_end]
+
+        # PHP variable: $identifier
+        var_re = re.compile(r"\$(\w+)")
+        # Assignment: $var = <expr>
+        assign_re = re.compile(r"^\s*\$(\w+)\s*=\s*(.+?);?\s*$")
+        # Function/method call
+        call_re = re.compile(r"([\w:>-]+)\s*\(([^)]*)\)")
+
+        for line in scope_lines:
+            m = assign_re.match(line)
+            if m:
+                target = m.group(1)
+                expr = m.group(2) or ""
+                src_vars = {v for v in var_re.findall(expr)}
+                cfg.add_assignment(target, src_vars)
+
+            for call_m in call_re.finditer(line):
+                func_full = call_m.group(1).split("->")[-1].split("::")[-1]
+                args_raw = call_m.group(2) or ""
+                args_vars = {v for v in var_re.findall(args_raw)}
+                cfg.add_sink_use(func_full, args_vars)
+
+            # echo/print special form: echo $var;
+            echo_m = re.match(r"^\s*(?:echo|print)\s+(.+?);?\s*$", line, re.IGNORECASE)
+            if echo_m:
+                expr = echo_m.group(1)
+                cfg.add_sink_use("echo", {v for v in var_re.findall(expr)})
+
+        return cfg
+
+    # ------------------------------------------------------------------
     # Generic CFG builder (Python regex — for JS and other languages)
     # ------------------------------------------------------------------
 
@@ -541,16 +793,18 @@ class TaintCandidateExtractor:
         candidates: list[ASTCandidate] = []
         sinks_py = _PYTHON_SINKS_BY_CWE.get(cwe, [])
         sinks_js = _JS_SINKS_BY_CWE.get(cwe, [])
-        all_sinks = sinks_py + sinks_js
+        sinks_php = _PHP_SINKS_BY_CWE.get(cwe, [])
+        all_sinks = sinks_py + sinks_js + sinks_php
+        all_sources_bare = _PYTHON_SOURCE_BARE | _JS_SOURCE_BARE | _PHP_SOURCE_BARE
 
         for i, line in enumerate(lines):
             lineno = i + 1
             if abs(lineno - center_line) > radius:
                 continue
 
-            # Sources
-            for bare in _PYTHON_SOURCE_BARE | _JS_SOURCE_BARE:
-                if re.search(r"\b" + re.escape(bare) + r"\b", line):
+            # Sources (PHP superglobals use $-prefix)
+            for bare in all_sources_bare:
+                if re.search(r"(\$)?" + re.escape(bare) + r"\b", line):
                     candidates.append(ASTCandidate(
                         kind="source", name=bare, line=lineno, col=0, sink_kind="call"
                     ))
@@ -646,18 +900,20 @@ def _find_function_body_heuristic(lines: list[str], center_idx: int) -> tuple[in
     func_start = max(0, center_idx - 80)
     func_end = min(len(lines), center_idx + 80)
 
+    _FUNC_STARTS = ("def ", "async def ", "function ", "const ", "class ", "public function ",
+                    "private function ", "protected function ", "static function ")
+
     # Scan backwards for a function definition
     for i in range(center_idx, max(0, center_idx - 120), -1):
         stripped = lines[i].lstrip()
-        if stripped.startswith(("def ", "async def ", "function ", "const ", "class ")):
+        if any(stripped.startswith(fs) for fs in _FUNC_STARTS):
             func_start = i
             def_indent = len(lines[i]) - len(stripped)
             # Scan forwards to end of this function
             for j in range(i + 1, min(len(lines), i + 300)):
                 s2 = lines[j].lstrip()
                 cur_indent = len(lines[j]) - len(s2)
-                if s2.startswith(("def ", "async def ", "function ", "class ")) and \
-                        cur_indent <= def_indent:
+                if any(s2.startswith(fs) for fs in _FUNC_STARTS) and cur_indent <= def_indent:
                     func_end = j
                     break
             break

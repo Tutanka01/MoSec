@@ -1,0 +1,9 @@
+{
+  "label": "TP",
+  "should_validate": true,
+  "cwe": "CWE-89",
+  "description": "PHP SQLi: unsanitized $_GET['id'] interpolated into mysqli_query",
+  "source_hint": "$_GET",
+  "sink_hint": "mysqli_query",
+  "difficulty": "normal"
+}

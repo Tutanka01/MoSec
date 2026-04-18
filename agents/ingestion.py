@@ -97,6 +97,47 @@ _JS_PATTERNS: dict[str, list[str]] = {
     ],
 }
 
+_PHP_PATTERNS: dict[str, list[str]] = {
+    "http_route": [
+        r"\$_GET\b",
+        r"\$_POST\b",
+        r"\$_REQUEST\b",
+        r"->route\s*\(",
+        r"Route::",
+        r"->get\s*\(",
+        r"->post\s*\(",
+        r"\bRoute::get\b",
+        r"\bRoute::post\b",
+    ],
+    "file_read": [
+        r"\bfile_get_contents\s*\(",
+        r"\bfopen\s*\(",
+        r"\binclude\s*[('\"]",
+        r"\brequire\s*[('\"]",
+        r"\binclude_once\s*[('\"]",
+        r"\brequire_once\s*[('\"]",
+        r"\breadfile\s*\(",
+    ],
+    "subprocess": [
+        r"\bexec\s*\(",
+        r"\bsystem\s*\(",
+        r"\bshell_exec\s*\(",
+        r"\bpassthru\s*\(",
+        r"\bpopen\s*\(",
+        r"\bproc_open\s*\(",
+        r"\bpcntl_exec\s*\(",
+    ],
+    "eval": [
+        r"\beval\s*\(",
+        r"\bassert\s*\(",
+        r"\bcreate_function\s*\(",
+        r"\bpreg_replace\s*\(.*[/\|]e[/\|]",
+    ],
+    "deserialization": [
+        r"\bunserialize\s*\(",
+    ],
+}
+
 
 class IngestionAgent:
     """Phase 0 — clone/read a repository and produce a RepositoryManifest."""
@@ -160,6 +201,7 @@ class IngestionAgent:
     # ------------------------------------------------------------------
 
     def _init_parsers(self) -> None:
+        self._php_parser = None
         try:
             from tree_sitter import Language, Parser  # type: ignore
             import tree_sitter_python as tspython  # type: ignore
@@ -167,21 +209,31 @@ class IngestionAgent:
 
             self._py_parser = Parser(Language(tspython.language()))
             self._js_parser = Parser(Language(tsjavascript.language()))
-            logger.debug("tree-sitter parsers initialised")
+            logger.debug("tree-sitter parsers initialised (py, js)")
         except Exception as exc:
             logger.warning(
-                "tree-sitter unavailable (%s) — AST summaries will be empty", exc
+                "tree-sitter (py/js) unavailable (%s) — AST summaries will be empty", exc
             )
+
+        try:
+            from tree_sitter import Language, Parser  # type: ignore
+            import tree_sitter_php as tsphp  # type: ignore
+
+            self._php_parser = Parser(Language(tsphp.language_php()))
+            logger.debug("tree-sitter PHP parser initialised")
+        except Exception as exc:
+            logger.warning("tree-sitter-php unavailable (%s) — PHP AST summaries skipped", exc)
 
     # ------------------------------------------------------------------
     # File collection
     # ------------------------------------------------------------------
 
     def _collect_files(self, repo: Path) -> list[Path]:
-        _EXT = {".py", ".js", ".ts", ".jsx", ".tsx"}
+        _EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".php"}
         _SKIP = {
             "node_modules", ".git", "__pycache__", ".venv", "venv",
             "dist", "build", ".tox", ".eggs", "site-packages",
+            "vendor",  # PHP Composer vendor dir
         }
         files: list[Path] = []
         for p in repo.rglob("*"):
@@ -212,7 +264,7 @@ class IngestionAgent:
         return summaries
 
     def _analyse_file_ast(self, path: Path, repo: Path) -> Optional[ASTSummary]:
-        if self._py_parser is None and self._js_parser is None:
+        if self._py_parser is None and self._js_parser is None and self._php_parser is None:
             return None
 
         rel = str(path.relative_to(repo))
@@ -224,6 +276,9 @@ class IngestionAgent:
         elif path.suffix in {".js", ".ts", ".jsx", ".tsx"} and self._js_parser:
             tree = self._js_parser.parse(code)
             return self._summarise_tree(tree, rel, is_python=False)
+        elif path.suffix == ".php" and self._php_parser:
+            tree = self._php_parser.parse(code)
+            return self._summarise_php_tree(tree, rel)
         return None
 
     @staticmethod
@@ -258,6 +313,30 @@ class IngestionAgent:
         walk(tree.root_node)
         return ASTSummary(file=rel, functions=functions, classes=classes, imports=imports)
 
+    @staticmethod
+    def _summarise_php_tree(tree, rel: str) -> ASTSummary:
+        """Extract functions, classes, and use-statements from a PHP tree-sitter tree."""
+        functions: list[str] = []
+        classes: list[str] = []
+        imports: list[str] = []
+
+        def walk(node) -> None:
+            if node.type in ("function_definition", "method_declaration"):
+                name_node = node.child_by_field_name("name")
+                if name_node and name_node.text:
+                    functions.append(name_node.text.decode(errors="replace"))
+            elif node.type == "class_declaration":
+                name_node = node.child_by_field_name("name")
+                if name_node and name_node.text:
+                    classes.append(name_node.text.decode(errors="replace"))
+            elif node.type == "namespace_use_declaration":
+                imports.append(node.text.decode(errors="replace")[:120])
+            for child in node.children:
+                walk(child)
+
+        walk(tree.root_node)
+        return ASTSummary(file=rel, functions=functions, classes=classes, imports=imports)
+
     # ------------------------------------------------------------------
     # Entry point extraction (regex-based, per-line)
     # ------------------------------------------------------------------
@@ -267,7 +346,12 @@ class IngestionAgent:
     ) -> list[EntryPoint]:
         entry_points: list[EntryPoint] = []
         for f in files:
-            patterns = _PY_PATTERNS if f.suffix == ".py" else _JS_PATTERNS
+            if f.suffix == ".py":
+                patterns = _PY_PATTERNS
+            elif f.suffix == ".php":
+                patterns = _PHP_PATTERNS
+            else:
+                patterns = _JS_PATTERNS
             rel = str(f.relative_to(repo))
             try:
                 lines = f.read_text(errors="replace").splitlines()
@@ -382,8 +466,17 @@ class IngestionAgent:
         has_py = any(repo.rglob("*.py"))
         has_js = any(p for p in repo.rglob("*")
                      if p.suffix in {".js", ".ts", ".jsx", ".tsx"})
+        has_php = any(repo.rglob("*.php"))
 
-        lang = "python" if has_py else ("javascript" if has_js else None)
+        if has_py:
+            lang = "python"
+        elif has_js:
+            lang = "javascript"
+        elif has_php:
+            lang = "php"
+        else:
+            lang = None
+
         if lang is None:
             return None
 

@@ -110,10 +110,14 @@ def load_cases(suite_dir: str) -> list[BenchmarkCase]:
     cases: list[BenchmarkCase] = []
     base = Path(suite_dir)
 
-    for code_path in sorted(base.glob("*.py")) + sorted(base.glob("*.js")):
-        expected_path = code_path.with_suffix("").with_suffix(
-            code_path.suffix + ".expected.json"
-        )
+    code_paths = (
+        sorted(base.glob("*.py"))
+        + sorted(base.glob("*.js"))
+        + sorted(base.glob("*.php"))
+    )
+    for code_path in code_paths:
+        # e.g. tp_flask_xss.py  →  tp_flask_xss.expected.json
+        expected_path = code_path.parent / (code_path.stem + ".expected.json")
         if not expected_path.exists():
             logger.warning("No expected file for %s — skipping", code_path.name)
             continue
@@ -356,11 +360,18 @@ def main() -> None:
     parser.add_argument("--output", default="output/bench_report.json", help="Output JSON path")
     args = parser.parse_args()
 
-    # Build LLM client from environment (same as pipeline.py)
+    # Same defaults as pipeline.py — honours .env automatically via python-dotenv
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
     from utils.llm import LLMClient
-    base_url = os.environ.get("LLM_BASE_URL", "http://localhost:8080/v1")
-    api_key = os.environ.get("LLM_API_KEY", "")
-    model = os.environ.get("LLM_MODEL", "qwen2.5-coder")
+    base_url = os.environ.get("LLM_BASE_URL", "https://llm.eva.univ-pau.fr/v1")
+    api_key  = os.environ.get("LLM_API_KEY", "")
+    model    = os.environ.get("LLM_MODEL", "gemma-4-31b-it-q8_0")
+    logging.getLogger(__name__).info("Benchmark LLM: %s  model=%s", base_url, model)
     llm = LLMClient(base_url=base_url, api_key=api_key, model=model)
 
     runner = BenchmarkRunner(llm_client=llm, output_dir="output/bench_tmp")

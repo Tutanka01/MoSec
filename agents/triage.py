@@ -123,13 +123,6 @@ class TriageAgent:
             return []
 
         logger.debug("Phase 1 | %s | tokens: %s", file_path, usage)
-
-        # The assistant prefill forced the model to start with "[".
-        # The API returns only the continuation, so we restore the opening bracket
-        # unless the model echoed it back itself.
-        if content and not content.lstrip().startswith("["):
-            content = "[" + content
-
         return self._parse_llm_response(content, file_path)
 
     # ------------------------------------------------------------------
@@ -154,10 +147,21 @@ class TriageAgent:
             return []
 
         if not isinstance(raw, list):
-            logger.warning(
-                "Phase 1 | expected JSON array for %s, got %s", file_path, type(raw)
-            )
-            return []
+            # Some models wrap findings: {"findings": [...]} or {"vulnerabilities": [...]}
+            if isinstance(raw, dict):
+                for v in raw.values():
+                    if isinstance(v, list):
+                        raw = v
+                        logger.debug("Phase 1 | %s: unwrapped dict → list", file_path)
+                        break
+                else:
+                    # Single finding returned as a bare dict → one-element list
+                    raw = [raw]
+            if not isinstance(raw, list):
+                logger.warning(
+                    "Phase 1 | expected JSON array for %s, got %s", file_path, type(raw)
+                )
+                return []
 
         findings: list[FileFinding] = []
         for item in raw:

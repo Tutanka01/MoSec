@@ -1,0 +1,9 @@
+{
+  "label": "TP",
+  "should_validate": true,
+  "cwe": "CWE-78",
+  "description": "PHP CmdI: unsanitized $_GET['host'] concatenated into shell_exec",
+  "source_hint": "$_GET",
+  "sink_hint": "shell_exec",
+  "difficulty": "normal"
+}

@@ -86,7 +86,7 @@ class SemgrepRunner:
         try:
             proc = subprocess.run(
                 ["grep", "-rn", "--include=*.py", "--include=*.js",
-                 "--include=*.ts", pattern, self.repo_path],
+                 "--include=*.ts", "--include=*.php", pattern, self.repo_path],
                 capture_output=True, text=True, timeout=30,
             )
             for line in proc.stdout.splitlines():
@@ -119,6 +119,7 @@ _LANG_MAP: dict[str, str] = {
     ".ts": "typescript",
     ".jsx": "javascript",
     ".tsx": "typescript",
+    ".php": "php",
 }
 
 
@@ -232,6 +233,15 @@ def _validate_semgrep_rule(yaml_text: str, rule_id: str) -> bool:
             pass
 
 
+_IDENT_RE = re.compile(r'^[a-zA-Z_$][\w$.]*$')
+
+
+def _is_semgrep_safe(name: str) -> bool:
+    """Return True when *name* is a plain dotted identifier safe to embed in a Semgrep pattern."""
+    bare = name.split("(")[0].strip()
+    return bool(_IDENT_RE.match(bare))
+
+
 def generate_semgrep_rule(
     finding_id: str,
     source: str,
@@ -252,8 +262,35 @@ def generate_semgrep_rule(
     regex that turned `user['id']` into the invalid `user['id'](...)`.
 
     The rule is validated with `semgrep --validate` before being returned.
-    If validation fails, a simpler pattern-regex fallback rule is emitted.
+    If validation fails (or source/sink are expressions), a regex fallback rule is emitted.
     """
+    source_bare = _semgrep_base_name(source).split(".")[-1]
+    sink_bare = _semgrep_base_name(sink).split(".")[-1]
+    sem_lang = _LANG_MAP.get(language, language.lstrip("."))
+
+    # Short-circuit: if source or sink are non-identifier expressions (f-strings, operators…),
+    # skip the taint rule entirely and emit the simpler regex fallback immediately.
+    if not _is_semgrep_safe(source_bare) or not _is_semgrep_safe(sink_bare):
+        logger.debug(
+            "Semgrep: non-identifier source/sink ('%s'/'%s') → regex fallback immediately",
+            source_bare, sink_bare,
+        )
+        return (
+            f"rules:\n"
+            f"  - id: sast-{finding_id}-fallback\n"
+            f"    pattern-either:\n"
+            f"      - pattern-regex: '{re.escape(source_bare)}'\n"
+            f"      - pattern-regex: '{re.escape(sink_bare)}'\n"
+            f"    message: >\n"
+            f"      {cwe} (fallback pattern): {description}\n"
+            f"    languages: [{sem_lang}]\n"
+            f"    severity: WARNING\n"
+            f"    metadata:\n"
+            f'      cwe: "{cwe}"\n'
+            f'      finding_id: "{finding_id}"\n'
+            f"      fallback: true\n"
+        )
+
     src_pattern = to_semgrep_pattern(source, kind=source_kind or "call")
     sink_pattern = to_semgrep_pattern(sink, kind=sink_kind)
 
@@ -263,8 +300,6 @@ def generate_semgrep_rule(
             f"      - pattern: {to_semgrep_pattern(s)}" for s in sanitizers
         )
         sanitizer_block = f"    pattern-sanitizers:\n{san_lines}\n"
-
-    sem_lang = _LANG_MAP.get(language, language.lstrip("."))
 
     rule = (
         f"rules:\n"
@@ -290,8 +325,6 @@ def generate_semgrep_rule(
 
     if validate and not _validate_semgrep_rule(rule, finding_id):
         # Fallback: emit a simpler grep-style rule that is always valid
-        source_bare = _semgrep_base_name(source).split(".")[-1]
-        sink_bare = _semgrep_base_name(sink).split(".")[-1]
         rule = (
             f"rules:\n"
             f"  - id: sast-{finding_id}-fallback\n"

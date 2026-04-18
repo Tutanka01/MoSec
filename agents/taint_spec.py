@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -37,12 +38,21 @@ Your task:
 4. List any UNRESOLVED CALLS on the taint path.
 5. State the sink_kind: "call", "method_call", "property_assignment", or "subscript_assignment".
 
+CRITICAL SINK RULE — The sink MUST be a named callable function or named property.
+  NEVER use an f-string, template literal, or string expression as the sink.
+  If tainted data flows into an interpolated string that is then passed to another function,
+  use THAT outer function as the sink (e.g. make_response, render_template_string, send,
+  res.send, cursor.execute, os.system, open, echo, etc.).
+
+  WRONG sinks: 'f"<h1>{name}</h1>"'  '`Hello ${user}`'  '"SELECT * FROM " + id'
+  CORRECT sinks: 'make_response'  'render_template_string'  'cursor.execute'  'res.send'
+
 If no candidates are provided or none fit, infer from the code — but prefer candidates.
 
 Respond ONLY in JSON (no markdown, no prose):
 {
   "source": "<exact source function or variable name from candidates>",
-  "sink": "<exact sink function or expression from candidates>",
+  "sink": "<named callable or property — never an expression>",
   "sink_kind": "call" | "method_call" | "property_assignment" | "subscript_assignment",
   "sanitizers": ["<sanitizer1>", ...],
   "unresolved_calls": ["<call1>", ...],
@@ -269,4 +279,60 @@ class TaintSpecAgent:
         if data["sink_kind"] not in valid_kinds:
             data["sink_kind"] = "call"
 
+        # Reject expression sinks (f-strings, template literals, concatenations).
+        # These crash Semgrep YAML generation and break the static trace.
+        # Replace with the best callable we can infer from the context.
+        sink = data["sink"]
+        if not _is_named_callable(sink):
+            logger.debug(
+                "Phase 2 | expression sink detected %r — substituting callable", sink
+            )
+            data["sink"] = _infer_callable_sink(sink, data.get("taint_path_summary", ""))
+            data["sink_kind"] = "call"
+
         return data
+
+
+_EXPR_SINK_RE = re.compile(r'["\'{`<>]')
+
+def _is_named_callable(sink: str) -> bool:
+    """Return True when sink is a plain dotted identifier (callable or property name)."""
+    bare = sink.split("(")[0].strip()
+    return bool(re.match(r'^[a-zA-Z_$][\w$.]*$', bare)) and not _EXPR_SINK_RE.search(bare)
+
+
+_SINK_KEYWORDS_TO_CALLABLE: list[tuple[str, str]] = [
+    # XSS — HTML response functions
+    ("make_response",       "make_response"),
+    ("render_template",     "render_template_string"),
+    ("Response(",           "Response"),
+    ("send(",               "res.send"),
+    ("res.send",            "res.send"),
+    ("write(",              "res.write"),
+    ("echo",                "echo"),
+    ("innerHTML",           "innerHTML"),
+    # SQLi
+    ("execute(",            "cursor.execute"),
+    ("query(",              "cursor.query"),
+    # CmdI
+    ("system(",             "os.system"),
+    ("exec(",               "exec"),
+    ("shell_exec",          "shell_exec"),
+    # Path traversal
+    ("open(",               "open"),
+    ("file_get_contents",   "file_get_contents"),
+]
+
+def _infer_callable_sink(expr: str, summary: str) -> str:
+    """
+    Best-effort inference of a named callable sink from an expression.
+    Falls back to 'make_response' for HTML-like expressions (XSS default).
+    """
+    combined = (expr + " " + summary).lower()
+    for keyword, callable_name in _SINK_KEYWORDS_TO_CALLABLE:
+        if keyword.lower() in combined:
+            return callable_name
+    # Default for HTML string interpolation → Flask response function
+    if any(tag in expr for tag in ("<", ">", "html", "HTML")):
+        return "make_response"
+    return "make_response"

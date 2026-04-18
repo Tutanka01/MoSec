@@ -140,17 +140,22 @@ class LLMClient:
         if not text:
             raise EmptyResponseError("LLM returned an empty response")
 
-        # 1. Strip ```json ... ``` or ``` ... ``` fences
+        # 1. Strip ```json ... ``` or ``` ... ``` fences (anywhere in the text,
+        #    not just at ^ — some models prefix fences with a stray "[" or prose).
+        #    Also handle unclosed fences (response truncated before closing ```).
         fenced = re.sub(
-            r"^```(?:json)?\s*\n?(.*?)\n?```\s*$",
+            r"```(?:\w+)?\s*\n?(.*?)\n?```",
             r"\1",
             text,
             flags=re.DOTALL,
-        )
+        ).strip()
         if fenced != text:
-            text = fenced.strip()
+            text = fenced
             if not text:
                 raise EmptyResponseError("LLM returned an empty response (empty fenced block)")
+        elif re.match(r"^```(?:\w+)?\s*\n?", text):
+            # Opening fence without closing fence — strip the opener and continue
+            text = re.sub(r"^```(?:\w+)?\s*\n?", "", text).strip()
 
         # 2. Direct parse
         try:
@@ -172,13 +177,35 @@ class LLMClient:
                 except json.JSONDecodeError:
                     pass
 
-        # 4. Last resort: fix common LLM mistakes (trailing commas, single quotes)
+        # 4. Fix common LLM mistakes (trailing commas, single quotes)
         cleaned = re.sub(r",\s*([}\]])", r"\1", text)  # trailing commas
         cleaned = cleaned.replace("'", '"')             # single → double quotes
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
             pass
+
+        # 5. Repair truncated JSON — model hit token limit mid-response.
+        #    Try appending the most common closing suffixes.
+        for suffix in ('"}', '"}', '}', '"}}'):
+            try:
+                return json.loads(text + suffix)
+            except json.JSONDecodeError:
+                pass
+
+        # 6. Regex extraction of complete key-value pairs from partially-valid JSON.
+        #    Minimum viable rescue: extract whatever fields were fully written.
+        if text.lstrip().startswith("{"):
+            pairs: dict = {}
+            for m in re.finditer(r'"(\w+)"\s*:\s*"([^"]*)"', text):
+                pairs[m.group(1)] = m.group(2)
+            for m in re.finditer(r'"(\w+)"\s*:\s*(-?\d+(?:\.\d+)?)', text):
+                pairs[m.group(1)] = float(m.group(2)) if "." in m.group(2) else int(m.group(2))
+            for m in re.finditer(r'"(\w+)"\s*:\s*(true|false|null)', text):
+                pairs[m.group(1)] = {"true": True, "false": False, "null": None}[m.group(2)]
+            if pairs:
+                logger.debug("extract_json: rescued %d field(s) from truncated JSON", len(pairs))
+                return pairs
 
         raise ValueError(
             f"Could not extract valid JSON from LLM output (first 300 chars): "

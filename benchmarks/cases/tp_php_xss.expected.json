@@ -1,0 +1,9 @@
+{
+  "label": "TP",
+  "should_validate": true,
+  "cwe": "CWE-79",
+  "description": "PHP XSS: unescaped $_GET['name'] echoed directly into HTML",
+  "source_hint": "$_GET",
+  "sink_hint": "echo",
+  "difficulty": "normal"
+}

@@ -202,10 +202,10 @@ class VerifierAgent:
         try:
             content, _ = self.llm.chat(
                 [{"role": "user", "content": prompt}],
-                max_tokens=512,
+                max_tokens=1024,   # raised: reasoning can be verbose
                 temperature=0.1,
             )
-            data = self.llm.extract_json(content)
+            data = self._extract_dict(content)
             verdict = self._safe_verdict(data.get("verdict", "unreachable"))
             reasoning = str(data.get("reasoning", ""))
             return verdict, reasoning
@@ -220,16 +220,18 @@ class VerifierAgent:
         verdict: str,
         reasoning: str,
     ) -> list[str]:
+        # Pass only a concise evidence digest — the full text was already in Propose
+        short_evidence = evidence_text[:800] + ("\n  ...[truncated]" if len(evidence_text) > 800 else "")
         prompt = _FALSIFY_PROMPT.format(
             verdict=verdict,
-            reasoning=reasoning,
+            reasoning=reasoning[:400],
             file=spec.file,
             line=spec.line,
             cwe=spec.cwe,
             source=spec.source,
             sink=spec.sink,
             sanitizers=spec.sanitizers or "none",
-            evidence=evidence_text,
+            evidence=short_evidence,
         )
         try:
             content, _ = self.llm.chat(
@@ -237,7 +239,7 @@ class VerifierAgent:
                 max_tokens=512,
                 temperature=0.2,
             )
-            data = self.llm.extract_json(content)
+            data = self._extract_dict(content)
             rebuttals = data.get("rebuttals", [])
             if not isinstance(rebuttals, list):
                 rebuttals = [str(rebuttals)]
@@ -259,10 +261,11 @@ class VerifierAgent:
             if rebuttals
             else "  (no rebuttals — reviewer found the evidence solid)"
         )
-
+        # Decide only needs the verdict, brief reasoning, and rebuttals — not full evidence
+        short_evidence = evidence_text[:600] + ("\n  ...[truncated]" if len(evidence_text) > 600 else "")
         prompt = _DECIDE_PROMPT.format(
             verdict=initial_verdict,
-            reasoning=initial_reasoning,
+            reasoning=initial_reasoning[:400],
             rebuttals=rebuttal_text,
             file=spec.file,
             line=spec.line,
@@ -270,20 +273,19 @@ class VerifierAgent:
             source=spec.source,
             sink=spec.sink,
             sanitizers=spec.sanitizers or "none",
-            evidence=evidence_text,
+            evidence=short_evidence,
         )
         try:
             content, _ = self.llm.chat(
                 [{"role": "user", "content": prompt}],
-                max_tokens=256,
+                max_tokens=512,   # raised from 256: verdict + reasoning must fit
                 temperature=0.0,
             )
-            data = self.llm.extract_json(content)
+            data = self._extract_dict(content)
             verdict = self._safe_verdict(data.get("verdict", "unreachable"))
             reasoning = str(data.get("reasoning", ""))
             return verdict, reasoning
         except Exception as exc:
-            # FAIL CLOSED: any LLM failure in the decide stage → unreachable
             logger.warning(
                 "Verifier decide failed: %s — fail-closed to unreachable", exc
             )
@@ -292,6 +294,22 @@ class VerifierAgent:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _extract_dict(self, content: str) -> dict:
+        """
+        Extract a JSON dict from LLM output.
+        Handles the case where some models return a single-element list
+        instead of a bare object: [{"verdict": ...}] → {"verdict": ...}.
+        """
+        data = self.llm.extract_json(content)
+        # Unwrap single-item list: [{"verdict":...}] → {"verdict":...}
+        if isinstance(data, list):
+            if data and isinstance(data[0], dict):
+                return data[0]
+            raise ValueError(f"Expected dict, got non-dict list: {data!r:.100}")
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dict, got {type(data).__name__}: {data!r:.100}")
+        return data
 
     @staticmethod
     def _safe_verdict(raw: object) -> str:
@@ -304,16 +322,20 @@ class VerifierAgent:
 
     @staticmethod
     def _format_evidence(evidence: list[VerificationEvidence]) -> str:
+        """Format evidence for the Propose prompt. Hard-capped at 1500 chars to
+        prevent context overflow in the three-stage verify pipeline."""
         if not evidence:
             return "  (no evidence gathered)"
         parts: list[str] = []
         for e in evidence:
             if e.action.startswith("DEDUP:"):
                 continue
-            # Use structured summary when available (richer, no arbitrary truncation)
             if e.structured and e.structured.summary:
-                obs = e.structured.summary[:600]
+                obs = e.structured.summary[:300]
             else:
-                obs = e.result[:600]
-            parts.append(f"  [{e.iteration}] {e.action}:\n    {obs}")
-        return "\n".join(parts) if parts else "  (no evidence gathered)"
+                obs = e.result[:300]
+            parts.append(f"  [{e.iteration}] {e.action}: {obs}")
+        joined = "\n".join(parts) if parts else "  (no evidence gathered)"
+        if len(joined) > 1500:
+            joined = joined[:1500] + "\n  ...[evidence truncated — see confirmed_flows.json]"
+        return joined

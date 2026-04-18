@@ -125,7 +125,7 @@ Use parameterised queries: `cursor.execute('SELECT * FROM users WHERE id = ?', (
 ### Option 1 — Python directly
 
 ```bash
-git clone <this-repo> && cd mosec
+git clone https://github.com/Tutanka01/MoSec && cd MoSec
 
 # Install dependencies (Python 3.12)
 pip install -r requirements.txt
@@ -197,12 +197,12 @@ All settings are read from environment variables (or a `.env` file):
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_BASE_URL` | `http://localhost:8080/v1` | OpenAI-compatible API endpoint |
-| `LLM_MODEL` | `qwen2.5-coder` | Model identifier |
+| `LLM_BASE_URL` | `https://llm.eva.univ-pau.fr/v1` | OpenAI-compatible API endpoint |
+| `LLM_MODEL` | `gemma-4-31b-it-q8_0` | Model identifier |
 | `LLM_API_KEY` | _(empty)_ | API key — leave empty for local endpoints |
 | `MOSEC_VERIFIER_N` | `1` | Self-consistency runs for VerifierAgent (set to `3` for maximum precision) |
 
-Point `LLM_BASE_URL` at any OpenAI-compatible server: llama.cpp, vLLM, Ollama, LM Studio, or an actual OpenAI key.
+Point `LLM_BASE_URL` at any OpenAI-compatible server: llama.cpp (`http://localhost:8080/v1`), vLLM, Ollama (`http://localhost:11434/v1`), or an actual OpenAI key.
 
 ---
 

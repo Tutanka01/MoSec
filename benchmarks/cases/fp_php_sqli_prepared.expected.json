@@ -1,0 +1,9 @@
+{
+  "label": "FP",
+  "should_validate": false,
+  "cwe": "CWE-89",
+  "description": "PHP SQLi false positive: PDO prepared statement with parameterized query is safe",
+  "source_hint": "$_GET",
+  "sink_hint": "execute",
+  "difficulty": "normal"
+}
