@@ -12,8 +12,6 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Optional
-
 from pydantic import ValidationError
 
 from models.schemas import FileFinding, RawFinding, RepositoryManifest
@@ -93,7 +91,7 @@ class TriageAgent:
             half = _MAX_FILE_CHARS // 2
             raw_code = (
                 raw_code[:half]
-                + f"\n\n... [TRUNCATED — file is large] ...\n\n"
+                + "\n\n... [TRUNCATED — file is large] ...\n\n"
                 + raw_code[-half:]
             )
 

@@ -17,8 +17,6 @@ import logging
 import re
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from models.schemas import ASTCandidate, FileFinding, TaintSpec
 from utils.llm import LLMClient, LLMError
 from utils.sast import generate_semgrep_rule

@@ -25,7 +25,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -153,7 +152,6 @@ def _run_pipeline_on_case(case: BenchmarkCase, llm_client, output_base: Path) ->
     Returns True if the pipeline produces at least one validated vulnerability.
     """
     import uuid
-    from agents.ingestion import IngestionAgent
     from agents.triage import TriageAgent
     from agents.taint_spec import TaintSpecAgent
     from agents.dataflow import DataFlowAgent
@@ -166,7 +164,7 @@ def _run_pipeline_on_case(case: BenchmarkCase, llm_client, output_base: Path) ->
     rules_dir.mkdir(exist_ok=True)
 
     # Create a minimal manifest pointing to the single test file
-    from models.schemas import RepositoryManifest, FileFinding
+    from models.schemas import RepositoryManifest
     manifest = RepositoryManifest(
         repo_path=str(case.code_path.parent),
         files=[str(case.code_path)],
@@ -240,10 +238,14 @@ class BenchmarkRunner:
 
                 # Accumulate metrics
                 report.total += 1
-                if result.tp: report.tp += 1
-                if result.fp: report.fp += 1
-                if result.tn: report.tn += 1
-                if result.fn: report.fn += 1
+                if result.tp:
+                    report.tp += 1
+                if result.fp:
+                    report.fp += 1
+                if result.tn:
+                    report.tn += 1
+                if result.fn:
+                    report.fn += 1
 
                 # Per-CWE
                 cwe = case.cwe

@@ -5,8 +5,7 @@ Pydantic schemas for all inter-agent data structures in the SAST pipeline.
 from __future__ import annotations
 
 import math
-from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 

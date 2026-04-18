@@ -14,16 +14,12 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-
 from models.schemas import (
     CVSSMetrics,
-    CVSSScore,
     ConfirmedFlow,
     PipelineReport,
     ReportEntry,
     ValidatedVuln,
-    VerificationEvidence,
     calculate_cvss31,
 )
 from utils.llm import LLMClient, LLMError
@@ -363,14 +359,14 @@ class ReporterAgent:
     def _write_markdown(self, entries: list[ReportEntry], path: str) -> None:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         lines: list[str] = [
-            f"# MoSec SAST Security Report",
-            f"",
+            "# MoSec SAST Security Report",
+            "",
             f"Generated: {ts}",
-            f"",
-            f"## Summary",
-            f"",
-            f"| # | Severity | CVSS | CWE | File | Title |",
-            f"|---|----------|------|-----|------|-------|",
+            "",
+            "## Summary",
+            "",
+            "| # | Severity | CVSS | CWE | File | Title |",
+            "|---|----------|------|-----|------|-------|",
         ]
 
         for idx, e in enumerate(entries, 1):
@@ -385,43 +381,43 @@ class ReporterAgent:
             badge = _severity_badge(e.cvss.severity)
             lines += [
                 f"## {idx}. {e.title}  {badge}",
-                f"",
-                f"| Field | Value |",
-                f"|-------|-------|",
+                "",
+                "| Field | Value |",
+                "|-------|-------|",
                 f"| **File** | `{e.file}:{e.line}` |",
                 f"| **CWE** | {e.cwe} |",
                 f"| **CVSS 3.1** | `{e.cvss.vector_string}` → **{e.cvss.base_score}** ({e.cvss.severity}) |",
                 f"| **Exploitability** | {e.exploitability} |",
                 f"| **Finding ID** | `{e.finding_id}` |",
-                f"",
-                f"### Description",
-                f"",
+                "",
+                "### Description",
+                "",
                 f"{e.description}",
-                f"",
-                f"### Attack Scenario",
-                f"",
+                "",
+                "### Attack Scenario",
+                "",
                 f"{e.attack_scenario}",
-                f"",
-                f"### Impact",
-                f"",
+                "",
+                "### Impact",
+                "",
                 f"{e.impact}",
-                f"",
-                f"### Proof of Concept",
-                f"",
-                f"```",
+                "",
+                "### Proof of Concept",
+                "",
+                "```",
                 f"{e.poc}",
-                f"```",
-                f"",
-                f"### Taint Flow",
-                f"",
+                "```",
+                "",
+                "### Taint Flow",
+                "",
                 f"*See `confirmed_flows.json` → finding `{e.finding_id}` for the full ReAct trace.*",
-                f"",
-                f"### Remediation",
-                f"",
+                "",
+                "### Remediation",
+                "",
                 f"{e.remediation}",
-                f"",
-                f"---",
-                f"",
+                "",
+                "---",
+                "",
             ]
 
         Path(path).write_text("\n".join(lines), encoding="utf-8")

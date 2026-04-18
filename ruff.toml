@@ -1,0 +1,3 @@
+[lint.per-file-ignores]
+# load_dotenv() must run before agent imports (they may read env vars at import time)
+"pipeline.py" = ["E402"]
