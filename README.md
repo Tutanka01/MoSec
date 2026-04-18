@@ -274,4 +274,4 @@ Full technical reference in [`docs/pipeline.md`](docs/pipeline.md):
 
 ## License
 
-MIT — do whatever you want with it. If you find a real CVE with it, let me know.
+AGPL-3.0 — If you find a real CVE with it, let me know.
