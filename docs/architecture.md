@@ -163,10 +163,40 @@ Every generated rule is validated with `semgrep --validate` before being written
 
 ---
 
-## Phase 3 — Data Flow Verification (ReAct + VerifierAgent)
+## Phase 3 — Data Flow Verification (ReAct + Template Pre-Pass + VerifierAgent)
 
 **Input:** `list[TaintSpec]`
 **Output:** `confirmed_flows.json` (`list[ConfirmedFlow]`)
+
+### Deterministic pre-pass: TemplateInjectionDetector (new)
+
+Before the LLM ReAct loop, a deterministic structural detector runs a
+CodeQL-style **additional taint step** analysis for JavaScript template literals.
+
+**What it catches:**
+
+```javascript
+const query = req.query.q;                    // source
+const html = `<script>                        // template taint step
+  element.innerHTML = '${query}';             // DOM op inside server string
+</script>`;
+res.send(html);                               // real server-side sink
+```
+
+Semgrep and naive LLM analysis miss this because `innerHTML` appears inside a
+string literal — not as a real property assignment in the server-side AST.
+The `TemplateInjectionDetector` recognises the `${source_var}` → `res.send(html)`
+pattern and injects structural evidence as `iteration=0` before the LLM loop.
+
+**Algorithm:**
+1. Extract all variables assigned from the declared source
+2. Scan for `${source_var}` interpolations in backtick strings
+3. Scan for `res.send(template_var)` / `res.write(...)` output calls
+4. Check for XSS sanitizers (`DOMPurify`, `encodeURIComponent`, `htmlspecialchars`, …)
+5. If steps 2+3 match and step 4 finds no sanitizer → inject `StructuredEvidence`
+
+This implements the "additional taint step" concept from CodeQL's JavaScript
+taint-tracking library (Avgustinov et al., 2016).
 
 ### ReAct loop
 
@@ -178,9 +208,16 @@ Each finding gets a loop of up to 5 iterations. Key improvements over the origin
 
 **Structured evidence (new):** each `VerificationEvidence` now carries a `StructuredEvidence` with `hits: list[CodeLocation]` (precise file/line/snippet) in addition to the raw text. This feeds into SARIF `codeFlows` and prevents the silent truncation of evidence to 300 characters.
 
+**Template literal knowledge in `_REASON_PROMPT` (new):** the reasoning prompt
+carries explicit instruction that `${expr}` in backtick strings propagates taint,
+and that DOM operations inside server-sent HTML strings are server-side XSS.
+
 **CodeQL query (improved):** the `_act_codeql` action now uses different query strategies based on `sink_kind` — a TaintTracking query for function calls, and an assignment-based query for property assignments.
 
 ```
+[Pre-pass] TemplateInjectionDetector.detect(file, source, sink)
+  → if match: inject iteration=0 StructuredEvidence
+
 Iteration 1..5:
   REASON: LLM → ReActStep (validated)
     - if action already in played → inject DEDUP observation, don't consume iteration
@@ -270,14 +307,18 @@ A ground-truth benchmark suite for measuring pipeline quality end-to-end:
 benchmarks/
   runner.py                    # P/R/F1 runner, CI gate (F1 ≥ 0.5)
   cases/
-    tp_flask_xss.py            # True Positive: Flask XSS
-    tp_flask_sqli.py           # True Positive: SQL injection
-    tp_flask_cmdi.py           # True Positive: command injection
-    tp_flask_path_traversal.py # True Positive: path traversal
-    tp_js_xss.js               # True Positive: JS innerHTML XSS
+    tp_flask_xss.py            # True Positive: Flask XSS (CWE-79)
+    tp_flask_sqli.py           # True Positive: SQL injection (CWE-89)
+    tp_flask_cmdi.py           # True Positive: command injection (CWE-78)
+    tp_flask_path_traversal.py # True Positive: path traversal (CWE-22)
+    tp_js_xss.js               # True Positive: server-side template injection → XSS (CWE-79)
+    tp_php_cmdi.php            # True Positive: PHP shell_exec injection (CWE-78)
+    tp_php_sqli.php            # True Positive: PHP mysqli_query injection (CWE-89)
+    tp_php_xss.php             # True Positive: PHP echo XSS (CWE-79)
     fp_flask_xss_escaped.py    # False Positive: html.escape applied
     fp_flask_sqli_parameterized.py # False Positive: parameterized query
     fp_flask_cmdi_shlex.py     # False Positive: shlex.quote applied
+    fp_php_sqli_prepared.php   # False Positive: PHP prepared statement
     edge_interproc_xss.py      # Edge: inter-procedural source → sink
     edge_sanitizer_bypass.py   # Edge: conditional sanitizer bypass
 ```
@@ -285,6 +326,19 @@ benchmarks/
 Run: `python -m benchmarks.runner --suite benchmarks/cases`
 
 Reports per-CWE and per-difficulty (normal / hard) breakdown. Exit code 1 if F1 < 0.5 (CI gate).
+
+### Known failure mode: `tp_js_xss.js` (fixed in this version)
+
+**Symptom**: Phase 3 incorrectly dropped the finding with verdict `"unreachable"`.
+
+**Root cause**: The sink was identified as `innerHTML`, a DOM property that
+appears only inside a server-side template literal string. Semgrep rules for
+`$X.innerHTML = $TAINT` did not match because there is no real property
+assignment in the server-side AST. The LLM reasoned that `innerHTML` is a
+client-side DOM operation and concluded the flow was unreachable in Node.js code.
+
+**Fix**: `TemplateInjectionDetector` pre-pass + updated prompts in Phase 2/3/4.
+See `docs/taint-analysis-design.md §7` for full root cause analysis.
 
 ---
 

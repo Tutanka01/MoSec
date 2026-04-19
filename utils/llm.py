@@ -134,6 +134,14 @@ class LLMClient:
 
         Raises ValueError if no valid JSON can be found.
         Raises EmptyResponseError (subclass of ValueError) if *text* is empty.
+
+        Thinking model support
+        ---------------------
+        Reasoning models (minimax-m2.7, DeepSeek-R1, QwQ, o1-mini, …) emit
+        chain-of-thought inside <think>...</think> blocks before their actual
+        JSON output.  These blocks are stripped unconditionally before any
+        extraction attempt so that the JSON parser sees only the structured
+        part of the response.
         """
         text = text.strip()
 
@@ -141,6 +149,19 @@ class LLMClient:
         # different root causes and different remediation paths.
         if not text:
             raise EmptyResponseError("LLM returned an empty response")
+
+        # 0. Strip <think>...</think> blocks emitted by reasoning/thinking models.
+        #    Must run before fence stripping: some models nest fences inside <think>.
+        if "<think>" in text:
+            stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            if stripped:
+                logger.debug(
+                    "extract_json: stripped <think> block (%d → %d chars)",
+                    len(text),
+                    len(stripped),
+                )
+                text = stripped
+            # If stripping left nothing, keep the original and let later stages fail.
 
         # 1. Strip ```json ... ``` or ``` ... ``` fences (anywhere in the text,
         #    not just at ^ — some models prefix fences with a stray "[" or prose).

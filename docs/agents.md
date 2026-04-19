@@ -132,6 +132,42 @@ def run(self, specs: list[TaintSpec], repo_path: str) -> list[ConfirmedFlow]
 
 For each spec, calls `_verify_flow()`. Flows with a `confirmed` verdict are collected into the output list.
 
+### TemplateInjectionDetector (pre-pass)
+
+`TemplateInjectionDetector` runs before the ReAct loop as a deterministic structural
+analysis. It implements the CodeQL "additional taint step" concept for JavaScript
+template literals (Avgustinov et al., 2016).
+
+**Trigger condition:** the declared sink is a DOM operation (`innerHTML`, `outerHTML`,
+`document.write`, …) — these appear inside server-side template literals rather than
+as real property assignments, causing Semgrep rules to miss the flow.
+
+**Algorithm:**
+```python
+detector = TemplateInjectionDetector()
+pre_pass = detector.detect(spec.file, spec.source, spec.sink)
+if pre_pass is not None:
+    evidence.insert(0, VerificationEvidence(
+        iteration=0,
+        action="pre_pass_template_injection(structural)",
+        result=pre_pass.summary,
+        structured=pre_pass,
+    ))
+```
+
+**What it detects:**
+```javascript
+const query = req.query.q;               // source_var extracted
+const html = `...${query}...`;           // template interpolation → hit
+res.send(html);                          // server output sink → hit
+// No DOMPurify / encodeURIComponent found → CONFIRM
+```
+
+Returns `None` when:
+- Sink is not a DOM operation
+- No template interpolation of source variables found
+- An XSS sanitizer (`DOMPurify`, `encodeURIComponent`, `htmlspecialchars`, …) found in scope
+
 ### ReAct loop internals
 
 **`_reason(spec, evidence, played, iteration) → ReActStep`**
@@ -143,6 +179,10 @@ The LLM's JSON response is parsed and validated against `ReActStep`:
 - `confidence: float` (0.0–1.0)
 
 Unknown action names are replaced with `"conclude"` (never silently dropped). On validation failure, the agent retries once with the error surfaced to the model.
+
+The `_REASON_PROMPT` now carries explicit knowledge of JavaScript template literal
+taint propagation — if `${source_var}` appears in a server-side template that reaches
+`res.send()`, the LLM is instructed to treat this as a confirmed CWE-79 flow.
 
 **Action deduplication:** `played: set[tuple[str, str]]` tracks `(action, param)`. If the LLM repeats an already-executed action, the loop inserts a `DEDUP:` observation and does not consume the iteration budget, forcing the LLM to try something new.
 
@@ -184,15 +224,27 @@ Runs `_single_verify()` N times when `consistency_n > 1`, takes majority vote.
 
 ### Propose → Falsify → Decide pipeline
 
-**Stage 1 — Propose (`_PROPOSE_PROMPT`):**
-The LLM states an initial verdict, citing evidence items by iteration number. Temperature 0.1 to allow slight variation across self-consistency runs.
+**Stage 1 — Propose (`_PROPOSE_PROMPT`, temperature 0.1):**
+The LLM states an initial verdict, citing evidence items by iteration number.
+The prompt carries template literal taint awareness: if evidence includes a
+`pre_pass_template_injection` entry, the LLM is instructed this is deterministic
+structural evidence of a confirmed CWE-79 flow.
 
-**Stage 2 — Falsify (`_FALSIFY_PROMPT`):**
-A second, adversarial prompt frames the LLM as a "skeptical red-team reviewer" and asks for at least two concrete reasons the initial verdict could be wrong. This step cannot produce a verdict — it can only surface weaknesses.
+**Stage 2 — Falsify (`_FALSIFY_PROMPT`, temperature 0.2):**
+A second, adversarial prompt frames the LLM as a "skeptical red-team reviewer"
+and asks for at least two concrete reasons the initial verdict could be wrong.
+This step cannot produce a verdict — it can only surface weaknesses.
+Higher temperature (0.2) encourages creative criticism.
 
-**Stage 3 — Decide (`_DECIDE_PROMPT`):**
-A third prompt weighs the initial reasoning against the rebuttals. The burden-of-proof rule is explicit in the prompt:
+**Stage 3 — Decide (`_DECIDE_PROMPT`, temperature 0.0):**
+A deterministic final arbiter weighing both sides. The burden-of-proof rule is
+explicit in the prompt:
 > "confirmed" only if there is AFFIRMATIVE evidence that untrusted data flows to the sink AND no effective sanitizer is on the path.
+
+**Template literal override rule (new):** if evidence includes
+`pre_pass_template_injection` structural evidence, a rebuttal claiming "innerHTML
+is a client-side sink" is explicitly overridden — the server's reflection of
+un-sanitized input IS the vulnerability, and the verdict should be CONFIRMED.
 
 Any LLM failure in this stage returns `("unreachable", "Decide stage failed (fail-closed): ...")`. This is the fail-closed invariant — a broken infrastructure must never create false positives.
 

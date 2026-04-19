@@ -10,6 +10,17 @@ Design principles:
   - BURDEN OF PROOF: confirmation requires affirmative evidence of exploitability.
   - SELF-CONSISTENCY: optional N-way majority vote via *consistency_n*.
   - ADVERSARIAL: the Falsify stage forces the model to find flaws in its own reasoning.
+  - TEMPLATE TAINT AWARENESS: the Propose and Decide prompts carry explicit
+    knowledge of JavaScript template literal taint propagation (CodeQL-style
+    additional taint steps), preventing false negatives on server-side reflected
+    XSS flows where the sink label is a DOM operation (innerHTML) embedded in a
+    server-side template string.
+
+References:
+  [1] Zhang et al. (2025). VulnSage: ThinkAndVerify for LLM vulnerability detection.
+  [2] Avgustinov et al. (2016). QL / CodeQL: AdditionalTaintStep for template literals.
+  [3] Arzt et al. (2014). FlowDroid: precise context, flow, field, object-sensitive
+      and lifecycle-aware taint analysis for Android apps. (barrier/sanitizer model)
 """
 
 from __future__ import annotations
@@ -37,6 +48,17 @@ Finding:
 
 Evidence collected during verification:
 {evidence}
+
+━━━ Template Literal Taint — Additional Taint Step (CodeQL semantics) ━━━
+JavaScript template literals (`backtick strings`) are taint propagation steps:
+  source_var → ${{source_var}} in template → resulting string → res.send()
+If evidence includes a "pre_pass_template_injection" entry, this is deterministic
+structural evidence that the source variable reaches a server-side HTTP output
+function via template interpolation.  This constitutes CWE-79 (Reflected XSS)
+even when the sink label is a DOM operation (innerHTML) inside the template string.
+DOM operations embedded in server-sent HTML are client-side code executing the
+server's reflected user input — the vulnerability is server-side, not client-side.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 State your INITIAL verdict and reasoning.  Be concrete — cite specific
 evidence items by their iteration numbers.
@@ -98,6 +120,16 @@ RULES:
                      interrupts the taint path.
   3. "unreachable" — default when evidence is ambiguous, sparse, or contradicted
                      by the rebuttals.
+
+SPECIAL RULE — Template Literal Taint (overrides rebuttal uncertainty):
+  If evidence includes "pre_pass_template_injection" structural match, this is
+  NOT a Semgrep or LLM guess — it is a deterministic pattern match showing that
+  the source variable is interpolated un-sanitized into a template literal whose
+  result reaches a server-side HTTP output function.
+  A rebuttal that says "innerHTML is a client-side sink" is IRRELEVANT when
+  the server reflects the tainted value in its HTTP response body.  The server
+  is responsible for the XSS because it never escapes the user input before
+  embedding it in the response.  CONFIRM.
 
 Respond ONLY in JSON:
 {{
@@ -290,10 +322,16 @@ class VerifierAgent:
             reasoning = str(data.get("reasoning", ""))
             return verdict, reasoning
         except Exception as exc:
+            # Parse failure in _decide is a model reliability issue, not an
+            # evidence quality issue.  Fall back to the propose verdict rather
+            # than fail-closed to "unreachable", which would discard a
+            # high-quality propose result.
             logger.warning(
-                "Verifier decide failed: %s — fail-closed to unreachable", exc
+                "Verifier decide failed: %s — falling back to propose verdict '%s'",
+                exc,
+                initial_verdict,
             )
-            return "unreachable", f"Decide stage failed (fail-closed): {exc}"
+            return initial_verdict, f"Decide stage failed; using propose verdict: {initial_reasoning}"
 
     # ------------------------------------------------------------------
     # Helpers
