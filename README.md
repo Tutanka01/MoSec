@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Semgrep](https://img.shields.io/badge/Semgrep-≥1.75-1E90FF?logo=semgrep&logoColor=white)](https://semgrep.dev)
 [![Ruff](https://img.shields.io/badge/code%20style-ruff-D7FF64?logo=ruff&logoColor=black)](https://docs.astral.sh/ruff)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: AGPL](https://img.shields.io/badge/License-AGPL-blue.svg)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/Tutanka01/MoSec/ci.yml?label=CI&logo=github)](https://github.com/Tutanka01/MoSec/actions)
 
 </div>
