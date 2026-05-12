@@ -49,6 +49,7 @@ from models.schemas import (
     TaintSpec,
     VerificationEvidence,
 )
+from utils.concurrency import ordered_parallel, resolve_workers
 from utils.llm import LLMClient, LLMError
 from utils.sast import CodeQLRunner, SemgrepRunner
 
@@ -108,7 +109,13 @@ _SERVER_OUTPUT_SINK_RE = re.compile(
 # DOM sinks that appear as identifiers inside template literals / HTML strings
 # rather than as direct property assignments in server-side code.
 _DOM_SINK_NAMES = frozenset(
-    {"innerHTML", "outerHTML", "document.write", "document.writeln", "insertAdjacentHTML"}
+    {
+        "innerHTML",
+        "outerHTML",
+        "document.write",
+        "document.writeln",
+        "insertAdjacentHTML",
+    }
 )
 
 # JavaScript/PHP/Python context sanitizers that neutralise XSS
@@ -330,7 +337,9 @@ class TemplateInjectionDetector:
 
         # Build a regex that matches `${source_var}` or `${source_var.prop}` etc.
         source_var_pat = "|".join(re.escape(v) for v in source_vars)
-        interp_re = re.compile(r"\$\{(?:\s*)(?:" + source_var_pat + r")(?:[^}]*)?\}", re.IGNORECASE)
+        interp_re = re.compile(
+            r"\$\{(?:\s*)(?:" + source_var_pat + r")(?:[^}]*)?\}", re.IGNORECASE
+        )
 
         # Also find the variable that receives the template literal
         # Note: multi-line templates are handled by the fallback in Step 3
@@ -443,6 +452,7 @@ class DataFlowAgent:
         codeql_db_path: str | None = None,
         codeql_bin: str = "codeql",
         consistency_n: int = 1,
+        max_workers: int | None = None,
     ) -> None:
         self.llm = llm
         self.output_dir = Path(output_dir)
@@ -451,34 +461,38 @@ class DataFlowAgent:
         self._codeql = CodeQLRunner(codeql_bin)
         # consistency_n > 1 enables majority-vote over N conclude calls (Lot D)
         self._consistency_n = consistency_n
+        self.max_workers = resolve_workers(max_workers, llm.max_concurrency)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def run(self, specs: list[TaintSpec], repo_path: str) -> list[ConfirmedFlow]:
-        confirmed: list[ConfirmedFlow] = []
+        def verify(spec: TaintSpec) -> ConfirmedFlow | None:
+            flow = self._verify_flow(spec, repo_path)
+            if flow is not None:
+                logger.info(
+                    "Phase 3 | CONFIRMED  %s line %d (%s)",
+                    spec.file,
+                    spec.line,
+                    spec.cwe,
+                )
+            else:
+                logger.info(
+                    "Phase 3 | DROPPED    %s line %d (%s) — sanitized or unreachable",
+                    spec.file,
+                    spec.line,
+                    spec.cwe,
+                )
+            return flow
 
-        for spec in specs:
-            try:
-                flow = self._verify_flow(spec, repo_path)
-                if flow is not None:
-                    confirmed.append(flow)
-                    logger.info(
-                        "Phase 3 | CONFIRMED  %s line %d (%s)",
-                        spec.file,
-                        spec.line,
-                        spec.cwe,
-                    )
-                else:
-                    logger.info(
-                        "Phase 3 | DROPPED    %s line %d (%s) — sanitized or unreachable",
-                        spec.file,
-                        spec.line,
-                        spec.cwe,
-                    )
-            except Exception as exc:
-                logger.error("Phase 3 | error on finding %s: %s", spec.finding_id, exc)
+        confirmed = ordered_parallel(
+            specs,
+            verify,
+            max_workers=self.max_workers,
+            logger=logger,
+            error_label=lambda spec: f"Phase 3 | error on finding {spec.finding_id}",
+        )
 
         out = self.output_dir / "confirmed_flows.json"
         out.write_text(
@@ -524,7 +538,9 @@ class DataFlowAgent:
                     )
                 )
         except Exception as exc:
-            logger.debug("Phase 3 | template injection pre-pass error (non-fatal): %s", exc)
+            logger.debug(
+                "Phase 3 | template injection pre-pass error (non-fatal): %s", exc
+            )
         # ──────────────────────────────────────────────────────────────────────
 
         for iteration in range(1, _MAX_ITERATIONS + 1):
@@ -607,7 +623,11 @@ class DataFlowAgent:
         # --- Final verdict via VerifierAgent (imported lazily to avoid circular dep) ---
         from agents.verifier import VerifierAgent  # noqa: PLC0415
 
-        verifier = VerifierAgent(self.llm, consistency_n=self._consistency_n)
+        verifier = VerifierAgent(
+            self.llm,
+            consistency_n=self._consistency_n,
+            max_workers=self.max_workers,
+        )
         verdict, verdict_reasoning = verifier.verify(spec, evidence)
 
         if verdict != "confirmed":
@@ -691,9 +711,7 @@ class DataFlowAgent:
             raw_action = str(data.get("action", "conclude")).strip().lower()
             if raw_action in _ACTION_ALIASES:
                 canonical = _ACTION_ALIASES[raw_action]
-                logger.debug(
-                    "Phase 3 | action alias %r → %r", raw_action, canonical
-                )
+                logger.debug("Phase 3 | action alias %r → %r", raw_action, canonical)
                 raw_action = canonical
             if raw_action not in _VALID_ACTIONS:
                 logger.warning(

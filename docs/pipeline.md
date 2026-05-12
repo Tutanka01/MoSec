@@ -224,7 +224,7 @@ After the ReAct loop, the collected evidence is passed through a three-stage pip
 
 **Fail-closed design:** any LLM or parse failure at any stage defaults to `unreachable`, not `confirmed`.
 
-**Self-consistency (optional):** setting `MOSEC_VERIFIER_N=3` runs the entire Propose → Falsify → Decide chain 3 times independently and takes the majority vote. Use this for maximum precision at the cost of 3× LLM calls.
+**Self-consistency (optional):** setting `MOSEC_VERIFIER_N=3` runs the entire Propose → Falsify → Decide chain 3 times independently and takes the majority vote. Use this for maximum precision at the cost of 3× verifier LLM calls. `--llm-jobs` / `MOSEC_LLM_JOBS` controls how many independent LLM requests may run concurrently across the process, including these verifier votes.
 
 ### Output: `confirmed_flows.json`
 
@@ -403,6 +403,6 @@ mypy --ignore-missing-imports agents/ utils/ models/
 
 The benchmark runner exits with code 1 if F1 score < 0.5, making it suitable as a CI quality gate:
 ```bash
-python -m benchmarks.runner --suite benchmarks/cases --output output/bench_report.json
+python -m benchmarks.runner --suite benchmarks/cases --output output/bench_report.json --llm-jobs 4
 ```
 Note: the benchmark runner requires a live LLM endpoint and is not included in the standard CI job (it would need `LLM_BASE_URL`/`LLM_API_KEY` secrets).

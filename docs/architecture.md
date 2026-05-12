@@ -323,7 +323,7 @@ benchmarks/
     edge_sanitizer_bypass.py   # Edge: conditional sanitizer bypass
 ```
 
-Run: `python -m benchmarks.runner --suite benchmarks/cases`
+Run: `python -m benchmarks.runner --suite benchmarks/cases --llm-jobs 4`
 
 Reports per-CWE and per-difficulty (normal / hard) breakdown. Exit code 1 if F1 < 0.5 (CI gate).
 

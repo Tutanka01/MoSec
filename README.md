@@ -143,7 +143,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # edit .env → LLM_BASE_URL, LLM_MODEL
 
-python pipeline.py --repo-path /path/to/target-repo --output-dir ./output
+python pipeline.py --repo-path /path/to/target-repo --output-dir ./output --llm-jobs 4
 ```
 
 ### Option 2 — Docker
@@ -153,6 +153,7 @@ cp .env.example .env  # edit LLM_BASE_URL and LLM_MODEL
 
 export REPO_PATH=/absolute/path/to/target-repo
 export OUTPUT_DIR=./output
+export MOSEC_LLM_JOBS=4
 
 docker compose up --build
 ```
@@ -176,6 +177,7 @@ python pipeline.py --repo-path PATH [options]
 | `--keep-rules` | `false` | Keep generated Semgrep rule YAMLs after the run |
 | `--rules-dir DIR` | *(temp dir)* | Where to write Semgrep rules |
 | `--codeql-bin PATH` | `codeql` | Path to CodeQL CLI binary |
+| `--llm-jobs N` | `MOSEC_LLM_JOBS` or `1` | Maximum concurrent LLM requests |
 
 > [!TIP]
 > Every phase persists its output as JSON. If a run crashes, resume from the last completed phase without re-running everything:
@@ -194,9 +196,12 @@ All settings are read from environment variables or a `.env` file:
 | `LLM_BASE_URL` | `https://llm.eva.univ-pau.fr/v1` | OpenAI-compatible API endpoint |
 | `LLM_MODEL` | `gemma-4-31b-it-q8_0` | Model identifier |
 | `LLM_API_KEY` | *(empty)* | API key — leave empty for local endpoints |
+| `MOSEC_LLM_JOBS` | `1` | Maximum concurrent LLM requests across agents |
 | `MOSEC_VERIFIER_N` | `1` | Self-consistency runs for Phase 3 (set to `3` for maximum precision) |
 
 Point `LLM_BASE_URL` at any OpenAI-compatible server: llama.cpp (`http://localhost:8080/v1`), vLLM, Ollama (`http://localhost:11434/v1`), or a standard OpenAI key.
+
+Use `MOSEC_LLM_JOBS=2` or `4` for most local GPU endpoints. Higher values only help if the backend can serve concurrent requests without queueing or out-of-memory failures.
 
 ---
 
@@ -232,21 +237,45 @@ Each phase writes a JSON checkpoint that can be inspected or used to resume:
 ## Benchmark
 
 ```bash
-python -m benchmarks.runner --suite benchmarks/cases --output output/bench_report.json
+python -m benchmarks.runner \
+  --suite benchmarks/cases \
+  --output output/bench_report.json \
+  --llm-jobs 4
 ```
 
 Emits Precision / Recall / F1 per CWE. Exit code 1 if F1 < 0.5.
+
+Docker:
+
+```bash
+export OUTPUT_DIR=./output
+export MOSEC_LLM_JOBS=4
+
+docker compose build
+docker compose run --rm benchmark
+```
+
+The benchmark runner measures the curated cases and writes `bench_report.json`. To exercise the full pipeline including Phase 0 and CodeQL DB creation against those same fixtures, run:
+
+```bash
+docker compose run --rm sast-agent \
+  --repo-path /app/benchmarks/cases \
+  --output-dir /output \
+  --codeql-bin codeql \
+  --llm-jobs 4 \
+  --keep-rules
+```
 
 ```
 ════════════════════════════════════════════════════
   MoSec Benchmark Results
 ════════════════════════════════════════════════════
-  Total cases : 12
-  TP=8  FP=1  TN=2  FN=1
-  Precision   : 88.9%
-  Recall      : 88.9%
-  F1          : 88.9%
-  Accuracy    : 83.3%
+  Total cases : 14
+  TP=10  FP=0  TN=4  FN=0
+  Precision   : 100.0%
+  Recall      : 100.0%
+  F1          : 100.0%
+  Accuracy    : 100.0%
 ════════════════════════════════════════════════════
 ```
 

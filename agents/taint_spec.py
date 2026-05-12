@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 from models.schemas import ASTCandidate, FileFinding, TaintSpec
+from utils.concurrency import ordered_parallel, resolve_workers
 from utils.llm import LLMClient, LLMError
 from utils.sast import generate_semgrep_rule
 
@@ -100,35 +101,40 @@ class TaintSpecAgent:
         llm: LLMClient,
         output_dir: str,
         rules_dir: str = str(Path(tempfile.gettempdir()) / "audit_rules"),
+        max_workers: int | None = None,
     ) -> None:
         self.llm = llm
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.rules_dir = Path(rules_dir)
         self.rules_dir.mkdir(parents=True, exist_ok=True)
+        self.max_workers = resolve_workers(max_workers, llm.max_concurrency)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def run(self, findings: list[FileFinding]) -> list[TaintSpec]:
-        specs: list[TaintSpec] = []
+        def process(finding: FileFinding) -> TaintSpec:
+            spec = self._process_finding(finding)
+            logger.info(
+                "Phase 2 | %s line %d → source=%s  sink=%s",
+                finding.file,
+                finding.line,
+                spec.source,
+                spec.sink,
+            )
+            return spec
 
-        for finding in findings:
-            try:
-                spec = self._process_finding(finding)
-                specs.append(spec)
-                logger.info(
-                    "Phase 2 | %s line %d → source=%s  sink=%s",
-                    finding.file,
-                    finding.line,
-                    spec.source,
-                    spec.sink,
-                )
-            except Exception as exc:
-                logger.error(
-                    "Phase 2 | failed for finding %s: %s", finding.finding_id, exc
-                )
+        specs = ordered_parallel(
+            findings,
+            process,
+            max_workers=self.max_workers,
+            logger=logger,
+            error_label=lambda finding: (
+                f"Phase 2 | failed for finding {finding.finding_id}"
+            ),
+        )
 
         out = self.output_dir / "taint_specs.json"
         out.write_text(

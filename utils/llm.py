@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from typing import Any
 
@@ -33,11 +34,29 @@ class EmptyResponseError(ValueError):
 class LLMClient:
     """Thin wrapper around the OpenAI SDK targeting a local llama-server."""
 
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        max_concurrency: int = 1,
+    ) -> None:
+        self.base_url = base_url
+        self.api_key = api_key or "x"
         self.model = model
-        self._client = OpenAI(base_url=base_url, api_key=api_key or "x")
+        self.max_concurrency = max(1, max_concurrency)
+        self._semaphore = threading.BoundedSemaphore(self.max_concurrency)
+        self._usage_lock = threading.Lock()
+        self._local = threading.local()
         self.total_prompt_tokens: int = 0
         self.total_completion_tokens: int = 0
+
+    def _client(self) -> OpenAI:
+        client = getattr(self._local, "client", None)
+        if client is None:
+            client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+            self._local.client = client
+        return client
 
     # ------------------------------------------------------------------
     # Core call
@@ -62,12 +81,13 @@ class LLMClient:
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,  # type: ignore[arg-type]
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
+                with self._semaphore:
+                    response = self._client().chat.completions.create(
+                        model=self.model,
+                        messages=messages,  # type: ignore[arg-type]
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
                 content = response.choices[0].message.content or ""
                 usage: dict[str, int] = {}
                 if response.usage:
@@ -76,8 +96,11 @@ class LLMClient:
                         "completion_tokens": response.usage.completion_tokens,
                         "total_tokens": response.usage.total_tokens,
                     }
-                    self.total_prompt_tokens += usage.get("prompt_tokens", 0)
-                    self.total_completion_tokens += usage.get("completion_tokens", 0)
+                    with self._usage_lock:
+                        self.total_prompt_tokens += usage.get("prompt_tokens", 0)
+                        self.total_completion_tokens += usage.get(
+                            "completion_tokens", 0
+                        )
 
                 # Treat an empty response as a soft failure and retry.
                 # Causes: context overflow, model refusal, transient server hiccup.
@@ -248,8 +271,11 @@ class LLMClient:
     # ------------------------------------------------------------------
 
     def token_summary(self) -> dict[str, int]:
+        with self._usage_lock:
+            prompt = self.total_prompt_tokens
+            completion = self.total_completion_tokens
         return {
-            "total_prompt_tokens": self.total_prompt_tokens,
-            "total_completion_tokens": self.total_completion_tokens,
-            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
+            "total_prompt_tokens": prompt,
+            "total_completion_tokens": completion,
+            "total_tokens": prompt + completion,
         }

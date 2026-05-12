@@ -140,12 +140,30 @@ def _load_validated_vulns(output_dir: Path) -> list[ValidatedVuln] | None:
 # ---------------------------------------------------------------------------
 
 
-def build_llm_client() -> LLMClient:
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except ValueError:
+        logger.warning("Invalid %s=%r — using %d", name, os.environ.get(name), default)
+        return default
+
+
+def build_llm_client(max_concurrency: int) -> LLMClient:
     base_url = os.environ.get("LLM_BASE_URL", "https://llm.eva.univ-pau.fr/v1")
     api_key = os.environ.get("LLM_API_KEY", "")
     model = os.environ.get("LLM_MODEL", "gemma-4-31b-it-q8_0")
-    logger.info("LLM endpoint: %s  model: %s", base_url, model)
-    return LLMClient(base_url=base_url, api_key=api_key, model=model)
+    logger.info(
+        "LLM endpoint: %s  model: %s  max_concurrency=%d",
+        base_url,
+        model,
+        max_concurrency,
+    )
+    return LLMClient(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        max_concurrency=max_concurrency,
+    )
 
 
 def run_pipeline(
@@ -156,8 +174,9 @@ def run_pipeline(
     clone_url: str | None,
     codeql_bin: str,
     rules_dir: str,
+    llm_jobs: int,
 ) -> PipelineReport | None:
-    llm = build_llm_client()
+    llm = build_llm_client(llm_jobs)
 
     # ── Phase 0 — Ingestion ──────────────────────────────────────────────
     manifest: RepositoryManifest | None = None
@@ -180,7 +199,7 @@ def run_pipeline(
 
     if start_phase <= 1:
         logger.info("═══ Phase 1: Triage (Carlini Sweep) ═══")
-        agent1 = TriageAgent(llm, str(output_dir))
+        agent1 = TriageAgent(llm, str(output_dir), max_workers=llm_jobs)
         findings = agent1.run(manifest)
     else:
         findings = _load_findings(output_dir)
@@ -203,7 +222,12 @@ def run_pipeline(
 
     if start_phase <= 2:
         logger.info("═══ Phase 2: Taint Specification ═══")
-        agent2 = TaintSpecAgent(llm, str(output_dir), rules_dir=rules_dir)
+        agent2 = TaintSpecAgent(
+            llm,
+            str(output_dir),
+            rules_dir=rules_dir,
+            max_workers=llm_jobs,
+        )
         taint_specs = agent2.run(findings)
     else:
         taint_specs = _load_taint_specs(output_dir)
@@ -230,6 +254,7 @@ def run_pipeline(
             codeql_db_path=manifest.codeql_db_path,
             codeql_bin=codeql_bin,
             consistency_n=consistency_n,
+            max_workers=llm_jobs,
         )
         confirmed_flows = agent3.run(taint_specs, manifest.repo_path)
     else:
@@ -252,7 +277,7 @@ def run_pipeline(
 
     if start_phase <= 4:
         logger.info("═══ Phase 4: Exploit Hypothesis ═══")
-        agent4 = ExploitAgent(llm, str(output_dir))
+        agent4 = ExploitAgent(llm, str(output_dir), max_workers=llm_jobs)
         validated_vulns = agent4.run(confirmed_flows)
     else:
         validated_vulns = _load_validated_vulns(output_dir)
@@ -276,7 +301,12 @@ def run_pipeline(
             "taint_specs": len(taint_specs),
             "confirmed_flows": len(confirmed_flows),
         }
-        agent5 = ReporterAgent(llm, str(output_dir), pipeline_stats=pipeline_stats)
+        agent5 = ReporterAgent(
+            llm,
+            str(output_dir),
+            pipeline_stats=pipeline_stats,
+            max_workers=llm_jobs,
+        )
         report = agent5.run(validated_vulns, confirmed_flows=confirmed_flows)
     else:
         logger.info("Phase 5 skipped — nothing to do")
@@ -393,6 +423,12 @@ def _parse_args() -> argparse.Namespace:
         default="codeql",
         help="Path to the CodeQL CLI binary.",
     )
+    parser.add_argument(
+        "--llm-jobs",
+        type=int,
+        default=None,
+        help="Maximum concurrent LLM requests. Defaults to MOSEC_LLM_JOBS or 1.",
+    )
     return parser.parse_args()
 
 
@@ -406,6 +442,8 @@ def main() -> None:
     logger.info("  output-dir : %s", output_dir)
     logger.info("  start-phase: %d", args.phase)
     logger.info("  keep-rules : %s", args.keep_rules)
+    llm_jobs = max(1, args.llm_jobs or _env_int("MOSEC_LLM_JOBS", 1))
+    logger.info("  llm-jobs   : %d", llm_jobs)
 
     report = run_pipeline(
         repo_path=args.repo_path,
@@ -415,6 +453,7 @@ def main() -> None:
         clone_url=args.clone_url,
         codeql_bin=args.codeql_bin,
         rules_dir=args.rules_dir,
+        llm_jobs=llm_jobs,
     )
 
     if report is not None:

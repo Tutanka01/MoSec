@@ -29,6 +29,7 @@ import logging
 from collections import Counter
 
 from models.schemas import TaintSpec, VerificationEvidence
+from utils.concurrency import ordered_parallel, resolve_workers
 from utils.llm import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -150,9 +151,15 @@ class VerifierAgent:
     Can optionally run N times and take the majority vote (*consistency_n*).
     """
 
-    def __init__(self, llm: LLMClient, consistency_n: int = 1) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        consistency_n: int = 1,
+        max_workers: int | None = None,
+    ) -> None:
         self.llm = llm
         self._n = max(1, consistency_n)
+        self.max_workers = resolve_workers(max_workers, llm.max_concurrency)
 
     # ------------------------------------------------------------------
     # Public API
@@ -171,15 +178,24 @@ class VerifierAgent:
         if self._n == 1:
             return self._single_verify(spec, evidence)
 
-        # Self-consistency: run N independent verifications, majority vote
-        verdicts: list[str] = []
-        reasonings: list[str] = []
-        for i in range(self._n):
+        def single(i: int) -> tuple[str, str]:
             v, r = self._single_verify(spec, evidence)
-            verdicts.append(v)
-            reasonings.append(r)
             logger.debug("Phase 3 | verifier run %d/%d → %s", i + 1, self._n, v)
+            return v, r
 
+        # Self-consistency: run N independent verifications, majority vote.
+        runs = ordered_parallel(
+            range(self._n),
+            single,
+            max_workers=self.max_workers,
+            logger=logger,
+            error_label=lambda i: f"Phase 3 | verifier run {i + 1}/{self._n} failed",
+        )
+        if not runs:
+            return "unreachable", "All verifier runs failed."
+
+        verdicts = [v for v, _ in runs]
+        reasonings = [r for _, r in runs]
         winner, count = Counter(verdicts).most_common(1)[0]
         # Pick the reasoning from the first run that produced the winner
         winning_reasoning = next(r for v, r in zip(verdicts, reasonings) if v == winner)
@@ -331,7 +347,10 @@ class VerifierAgent:
                 exc,
                 initial_verdict,
             )
-            return initial_verdict, f"Decide stage failed; using propose verdict: {initial_reasoning}"
+            return (
+                initial_verdict,
+                f"Decide stage failed; using propose verdict: {initial_reasoning}",
+            )
 
     # ------------------------------------------------------------------
     # Helpers

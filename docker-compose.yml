@@ -21,9 +21,39 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-https://llm.eva.univ-pau.fr/v1}
       LLM_MODEL: ${LLM_MODEL:-gemma-4-31b-it-q8_0}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      MOSEC_LLM_JOBS: ${MOSEC_LLM_JOBS:-1}
+      MOSEC_VERIFIER_N: ${MOSEC_VERIFIER_N:-1}
 
     # ── Default command ──────────────────────────────────────────────────
     # Override with `docker compose run sast-agent --phase 2 --keep-rules`
     command:
       - --repo-path=/repo
       - --output-dir=/output
+
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mosec/sast-agent:latest
+
+    volumes:
+      - ${OUTPUT_DIR:-./output}:/output
+
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://llm.eva.univ-pau.fr/v1}
+      LLM_MODEL: ${LLM_MODEL:-gemma-4-31b-it-q8_0}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      MOSEC_LLM_JOBS: ${MOSEC_LLM_JOBS:-1}
+      MOSEC_VERIFIER_N: ${MOSEC_VERIFIER_N:-1}
+
+    entrypoint:
+      - python
+      - -m
+      - benchmarks.runner
+    command:
+      - --suite
+      - benchmarks/cases
+      - --output
+      - /output/bench_report.json
+      - --llm-jobs
+      - ${MOSEC_LLM_JOBS:-1}

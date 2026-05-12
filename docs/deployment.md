@@ -20,8 +20,8 @@ cp .env.example .env
 #   LLM_MODEL=gemma-4-31b-it-q8_0
 #   LLM_API_KEY=
 
-# Run
-python pipeline.py --repo-path /path/to/target-repo
+# Run with bounded LLM concurrency
+python pipeline.py --repo-path /path/to/target-repo --llm-jobs 4
 ```
 
 Outputs land in `./output/` by default.
@@ -44,12 +44,15 @@ The Dockerfile downloads the CodeQL bundle during build (~1 GB). If you don't ne
 ```bash
 export REPO_PATH=/absolute/path/to/target-repo
 export OUTPUT_DIR=/absolute/path/to/output
+export MOSEC_LLM_JOBS=4
 
 # Ensure LLM settings are in .env
 cp .env.example .env
 
 docker compose up
 ```
+
+This runs the full pipeline, including Phase 0 ingestion and CodeQL database creation when `codeql` supports the target language. Results are written to `${OUTPUT_DIR}`.
 
 ### Override the command
 
@@ -61,7 +64,19 @@ docker compose run sast-agent --repo-path /repo --output-dir /output --phase 2 -
 docker compose run sast-agent \
   --repo-path /repo/myapp \
   --clone-url https://github.com/example/vulnerable-app \
-  --output-dir /output
+  --output-dir /output \
+  --llm-jobs 4
+
+# Run the benchmark quality gate inside Docker
+docker compose run --rm benchmark
+
+# Run the full pipeline, including CodeQL DB creation, on the benchmark fixtures
+docker compose run --rm sast-agent \
+  --repo-path /app/benchmarks/cases \
+  --output-dir /output \
+  --codeql-bin codeql \
+  --llm-jobs 4 \
+  --keep-rules
 ```
 
 ### Volume layout
@@ -71,6 +86,30 @@ docker compose run sast-agent \
 | `/repo` | Target repository (read-only) | `${REPO_PATH}:/repo:ro` |
 | `/output` | All pipeline outputs | `${OUTPUT_DIR}:/output` |
 | `/tmp/audit_rules` | Temporary Semgrep rules | `/tmp/audit_rules:/tmp/audit_rules` |
+
+---
+
+## Concurrency tuning
+
+MoSec can issue independent LLM requests concurrently within each phase. The pipeline phases still run in order, but files, findings, taint specs, exploit checks, report scoring, and verifier self-consistency votes can run in parallel.
+
+Use either CLI or environment configuration:
+
+```bash
+python pipeline.py --repo-path /path/to/repo --output-dir output --llm-jobs 4
+
+MOSEC_LLM_JOBS=4 docker compose up
+```
+
+Recommended starting values:
+
+| Backend | Starting value |
+|---|---:|
+| Single local llama.cpp/Ollama model | `2` |
+| Local server with enough VRAM and batching | `4` |
+| vLLM or dedicated OpenAI-compatible endpoint | `4` to `8` |
+
+If latency increases or the model server reports OOM/rate limits, reduce `MOSEC_LLM_JOBS`. For maximum precision, `MOSEC_VERIFIER_N=3` enables verifier self-consistency; this multiplies Phase 3 LLM calls and should be combined with a conservative `MOSEC_LLM_JOBS`.
 
 ---
 
@@ -246,21 +285,60 @@ Each intermediate JSON file is typically 1–10 KB per finding. The CodeQL datab
 
 ## Benchmark suite
 
-The benchmark suite measures pipeline quality end-to-end against a ground-truth corpus of 10 cases: 5 true positives, 3 false positives, and 2 hard edge cases. Run it after every change to agents, prompts, or schemas.
+The benchmark suite measures pipeline quality end-to-end against a ground-truth corpus of 14 cases: 8 normal true positives, 4 false positives, and 2 hard edge true positives. Run it after every change to agents, prompts, schemas, or concurrency behavior.
 
 ### Quick start
 
 ```bash
 # From the project root (LLM endpoint must be running)
-python -m benchmarks.runner
+python -m benchmarks.runner --llm-jobs 4
 
 # Custom suite directory and output path
 python -m benchmarks.runner \
   --suite benchmarks/cases \
-  --output output/bench_report.json
+  --output output/bench_report.json \
+  --llm-jobs 4
 ```
 
 Exit code 0 when F1 ≥ 0.5, exit code 1 otherwise (CI gate).
+
+### Docker
+
+The Docker image includes the Python dependencies, Semgrep, and the CodeQL CLI bundle from the Dockerfile. The benchmark service runs `python -m benchmarks.runner` directly:
+
+```bash
+export OUTPUT_DIR=./output
+export LLM_BASE_URL=http://host.docker.internal:8080/v1
+export LLM_MODEL=your-model
+export MOSEC_LLM_JOBS=4
+
+docker compose build
+docker compose run --rm benchmark
+
+# Optional explicit override
+docker compose run --rm benchmark \
+  --suite benchmarks/cases \
+  --output /output/bench_report.json \
+  --llm-jobs 4
+```
+
+The report is written to `./output/bench_report.json`.
+
+The benchmark runner is a quality gate over curated fixtures. It does not build a CodeQL database because it starts at the benchmark harness, not Phase 0 ingestion. To verify Docker, CodeQL, Semgrep, and the full agent pipeline together on the same fixtures, run a full pipeline smoke test:
+
+```bash
+export OUTPUT_DIR=./output/bench_full_pipeline
+export MOSEC_LLM_JOBS=4
+
+docker compose run --rm sast-agent \
+  --repo-path /app/benchmarks/cases \
+  --output-dir /output \
+  --codeql-bin codeql \
+  --llm-jobs 4 \
+  --keep-rules
+```
+
+That command writes the normal pipeline artifacts (`manifest.json`, `findings.json`, `confirmed_flows.json`, `results.sarif`, `report.md`) and exercises CodeQL DB creation when supported.
 
 ---
 
@@ -272,20 +350,20 @@ The runner prints a summary to stdout and writes `output/bench_report.json`:
 ============================================================
   MoSec Benchmark Results
 ============================================================
-  Total cases : 10
-  TP=5  FP=0  TN=3  FN=2
+  Total cases : 14
+  TP=10  FP=0  TN=4  FN=0
   Precision   : 100.0%
-  Recall      : 71.4%
-  F1          : 83.3%
-  Accuracy    : 80.0%
+  Recall      : 100.0%
+  F1          : 100.0%
+  Accuracy    : 100.0%
   Elapsed     : 312.4s
 ============================================================
 
   Per-CWE breakdown:
     CWE-22               P=100%  R=100%  F1=100%  (TP=1 FP=0 FN=0)
-    CWE-78               P=100%  R=100%  F1=100%  (TP=1 FP=0 FN=0)
-    CWE-79               P=100%  R=67%   F1=80%   (TP=2 FP=0 FN=1)
-    CWE-89               P=100%  R=100%  F1=100%  (TP=2 FP=0 FN=0)
+    CWE-78               P=100%  R=100%  F1=100%  (TP=2 FP=0 FN=0)
+    CWE-79               P=100%  R=100%  F1=100%  (TP=4 FP=0 FN=0)
+    CWE-89               P=100%  R=100%  F1=100%  (TP=3 FP=0 FN=0)
 ```
 
 **Reading the per-CWE table:**
@@ -316,13 +394,17 @@ The runner prints a summary to stdout and writes `output/bench_report.json`:
 | `tp_flask_cmdi` | TP | CWE-78 | normal | `request.args.get` → `os.system` |
 | `tp_flask_path_traversal` | TP | CWE-22 | normal | `request.args.get` → `open()` |
 | `tp_js_xss` | TP | CWE-79 | normal | `req.query` → `innerHTML` in template |
+| `tp_php_xss` | TP | CWE-79 | normal | `$_GET` reflected into HTML output |
+| `tp_php_sqli` | TP | CWE-89 | normal | `$_GET` concatenated into SQL |
+| `tp_php_cmdi` | TP | CWE-78 | normal | `$_GET` passed to shell execution |
 | `fp_flask_xss_escaped` | FP | CWE-79 | normal | `html.escape` sanitizer — must NOT validate |
 | `fp_flask_sqli_parameterized` | FP | CWE-89 | normal | `?` placeholder — must NOT validate |
 | `fp_flask_cmdi_shlex` | FP | CWE-78 | normal | `shlex.quote` — must NOT validate |
+| `fp_php_sqli_prepared` | FP | CWE-89 | normal | prepared statement — must NOT validate |
 | `edge_interproc_xss` | TP | CWE-79 | hard | Source and sink in different functions |
 | `edge_sanitizer_bypass` | TP | CWE-89 | hard | Sanitizer only on one conditional branch |
 
-**Hard cases** (`difficulty: hard`) test capabilities that require inter-procedural analysis or branch-sensitive reasoning. They are expected to be false negatives until the global taint graph (Lot E) is implemented. Their failures do not count against the CI F1 gate.
+**Hard cases** (`difficulty: hard`) test capabilities that require inter-procedural analysis or branch-sensitive reasoning. They remain part of the default benchmark and count toward the final metrics.
 
 To run only normal-difficulty cases:
 
@@ -339,13 +421,13 @@ for exp in src.glob('*.expected.json'):
     if d.get('difficulty', 'normal') == 'normal':
         code = exp.with_suffix('').with_suffix(exp.suffix.replace('.expected.json', ''))
         # find the code file
-        for ext in ['.py', '.js']:
+        for ext in ['.py', '.js', '.php']:
             code = src / (exp.stem.replace('.expected', '') + ext)
             if code.exists():
                 shutil.copy(code, dst / code.name)
                 shutil.copy(exp, dst / exp.name)
 "
-python -m benchmarks.runner --suite benchmarks/cases_normal
+python -m benchmarks.runner --suite benchmarks/cases_normal --llm-jobs 4
 ```
 
 ---
@@ -381,10 +463,12 @@ jobs:
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          MOSEC_LLM_JOBS: "4"
         run: |
           python -m benchmarks.runner \
             --suite benchmarks/cases \
-            --output output/bench_report.json
+            --output output/bench_report.json \
+            --llm-jobs 4
         # exit 1 when F1 < 0.5 — blocks the merge
 
       - name: Upload benchmark report
@@ -402,7 +486,7 @@ benchmark:
   stage: test
   script:
     - pip install -r requirements.txt
-    - python -m benchmarks.runner --suite benchmarks/cases --output output/bench_report.json
+    - python -m benchmarks.runner --suite benchmarks/cases --output output/bench_report.json --llm-jobs 4
   artifacts:
     when: always
     paths:
@@ -411,6 +495,7 @@ benchmark:
     LLM_BASE_URL: $LLM_BASE_URL
     LLM_MODEL:    $LLM_MODEL
     LLM_API_KEY:  $LLM_API_KEY
+    MOSEC_LLM_JOBS: "4"
 ```
 
 ---

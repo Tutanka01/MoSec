@@ -347,7 +347,7 @@ Produced by `python -m benchmarks.runner`. Contains precision/recall/F1 per CWE 
 }
 ```
 
-The CI gate exits with code 1 when `f1 < 0.5`. Run with `make bench` or `python -m benchmarks.runner` after any change to agents, prompts, or schemas.
+The CI gate exits with code 1 when `f1 < 0.5`. Run `python -m benchmarks.runner --suite benchmarks/cases --output output/bench_report.json --llm-jobs 4` after any change to agents, prompts, or schemas.
 
 ---
 

@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from utils.concurrency import ordered_parallel, resolve_workers
+
 logger = logging.getLogger(__name__)
 
 
@@ -211,9 +213,15 @@ def _run_pipeline_on_case(case: BenchmarkCase, llm_client, output_base: Path) ->
 
 
 class BenchmarkRunner:
-    def __init__(self, llm_client, output_dir: str = "bench_output") -> None:
+    def __init__(
+        self,
+        llm_client,
+        output_dir: str = "bench_output",
+        max_workers: int | None = None,
+    ) -> None:
         self.llm = llm_client
         self.output_dir = Path(output_dir)
+        self.max_workers = resolve_workers(max_workers, llm_client.max_concurrency)
 
     def run(self, suite_dir: str) -> BenchmarkReport:
         cases = load_cases(suite_dir)
@@ -226,7 +234,8 @@ class BenchmarkRunner:
 
         with tempfile.TemporaryDirectory(prefix="mosec_bench_") as tmp:
             tmp_path = Path(tmp)
-            for case in cases:
+
+            def run_case(case: BenchmarkCase) -> CaseResult:
                 logger.info("Running case: %s", case.name)
                 t0 = time.monotonic()
                 error: Optional[str] = None
@@ -238,61 +247,45 @@ class BenchmarkRunner:
                     logger.error("Case %s error: %s", case.name, exc)
 
                 elapsed = time.monotonic() - t0
-                result = CaseResult(
+                return CaseResult(
                     case=case, predicted=predicted, elapsed_s=elapsed, error=error
                 )
 
-                # Accumulate metrics
-                report.total += 1
-                if result.tp:
-                    report.tp += 1
-                if result.fp:
-                    report.fp += 1
-                if result.tn:
-                    report.tn += 1
-                if result.fn:
-                    report.fn += 1
+            results = ordered_parallel(
+                cases,
+                run_case,
+                max_workers=self.max_workers,
+                logger=logger,
+                error_label=lambda case: f"Case {case.name} error",
+            )
 
-                # Per-CWE
-                cwe = case.cwe
-                if cwe not in report.per_cwe:
-                    report.per_cwe[cwe] = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
-                for metric in ("tp", "fp", "tn", "fn"):
-                    if getattr(result, metric):
-                        report.per_cwe[cwe][metric] += 1
-
-                # Per-difficulty
-                diff = case.difficulty
-                if diff not in report.per_difficulty:
-                    report.per_difficulty[diff] = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
-                for metric in ("tp", "fp", "tn", "fn"):
-                    if getattr(result, metric):
-                        report.per_difficulty[diff][metric] += 1
+            for result in results:
+                self._accumulate(report, result)
 
                 status = "✓" if result.correct else "✗"
                 logger.info(
                     "%s  %s  predicted=%s  expected=%s  elapsed=%.1fs",
                     status,
-                    case.name,
-                    predicted,
-                    case.should_validate,
-                    elapsed,
+                    result.case.name,
+                    result.predicted,
+                    result.case.should_validate,
+                    result.elapsed_s,
                 )
                 report.results.append(
                     {
-                        "case": case.name,
-                        "label": case.label,
-                        "cwe": case.cwe,
-                        "difficulty": case.difficulty,
-                        "expected": case.should_validate,
-                        "predicted": predicted,
+                        "case": result.case.name,
+                        "label": result.case.label,
+                        "cwe": result.case.cwe,
+                        "difficulty": result.case.difficulty,
+                        "expected": result.case.should_validate,
+                        "predicted": result.predicted,
                         "correct": result.correct,
                         "tp": result.tp,
                         "fp": result.fp,
                         "tn": result.tn,
                         "fn": result.fn,
-                        "elapsed_s": round(elapsed, 2),
-                        "error": error,
+                        "elapsed_s": round(result.elapsed_s, 2),
+                        "error": result.error,
                     }
                 )
 
@@ -310,6 +303,32 @@ class BenchmarkRunner:
         )
 
         return report
+
+    @staticmethod
+    def _accumulate(report: BenchmarkReport, result: CaseResult) -> None:
+        report.total += 1
+        if result.tp:
+            report.tp += 1
+        if result.fp:
+            report.fp += 1
+        if result.tn:
+            report.tn += 1
+        if result.fn:
+            report.fn += 1
+
+        cwe = result.case.cwe
+        if cwe not in report.per_cwe:
+            report.per_cwe[cwe] = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+        for metric in ("tp", "fp", "tn", "fn"):
+            if getattr(result, metric):
+                report.per_cwe[cwe][metric] += 1
+
+        diff = result.case.difficulty
+        if diff not in report.per_difficulty:
+            report.per_difficulty[diff] = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
+        for metric in ("tp", "fp", "tn", "fn"):
+            if getattr(result, metric):
+                report.per_difficulty[diff][metric] += 1
 
     def write_report(self, report: BenchmarkReport, output_path: str) -> None:
         out = Path(output_path)
@@ -380,6 +399,12 @@ def main() -> None:
     parser.add_argument(
         "--output", default="output/bench_report.json", help="Output JSON path"
     )
+    parser.add_argument(
+        "--llm-jobs",
+        type=int,
+        default=None,
+        help="Maximum concurrent LLM requests/cases. Defaults to MOSEC_LLM_JOBS or 1.",
+    )
     args = parser.parse_args()
 
     # Same defaults as pipeline.py — honours .env automatically via python-dotenv
@@ -395,10 +420,28 @@ def main() -> None:
     base_url = os.environ.get("LLM_BASE_URL", "https://llm.eva.univ-pau.fr/v1")
     api_key = os.environ.get("LLM_API_KEY", "")
     model = os.environ.get("LLM_MODEL", "gemma-4-31b-it-q8_0")
-    logging.getLogger(__name__).info("Benchmark LLM: %s  model=%s", base_url, model)
-    llm = LLMClient(base_url=base_url, api_key=api_key, model=model)
+    try:
+        llm_jobs = max(1, args.llm_jobs or int(os.environ.get("MOSEC_LLM_JOBS", "1")))
+    except ValueError:
+        llm_jobs = 1
+    logging.getLogger(__name__).info(
+        "Benchmark LLM: %s  model=%s  max_concurrency=%d",
+        base_url,
+        model,
+        llm_jobs,
+    )
+    llm = LLMClient(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        max_concurrency=llm_jobs,
+    )
 
-    runner = BenchmarkRunner(llm_client=llm, output_dir="output/bench_tmp")
+    runner = BenchmarkRunner(
+        llm_client=llm,
+        output_dir="output/bench_tmp",
+        max_workers=llm_jobs,
+    )
     report = runner.run(args.suite)
     runner.write_report(report, args.output)
 

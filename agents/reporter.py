@@ -22,6 +22,7 @@ from models.schemas import (
     ValidatedVuln,
     calculate_cvss31,
 )
+from utils.concurrency import ordered_parallel, resolve_workers
 from utils.llm import LLMClient, LLMError
 
 logger = logging.getLogger(__name__)
@@ -92,11 +93,13 @@ class ReporterAgent:
         llm: LLMClient,
         output_dir: str,
         pipeline_stats: dict | None = None,
+        max_workers: int | None = None,
     ) -> None:
         self.llm = llm
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.pipeline_stats: dict = pipeline_stats or {}
+        self.max_workers = resolve_workers(max_workers, llm.max_concurrency)
 
     # ------------------------------------------------------------------
     # Public API
@@ -107,21 +110,24 @@ class ReporterAgent:
         vulns: list[ValidatedVuln],
         confirmed_flows: list[ConfirmedFlow] | None = None,
     ) -> PipelineReport:
-        entries: list[ReportEntry] = []
+        def build(vuln: ValidatedVuln) -> ReportEntry:
+            entry = self._build_report_entry(vuln)
+            logger.info(
+                "Phase 5 | %s  CVSS %.1f (%s)  %s",
+                vuln.cwe,
+                entry.cvss.base_score,
+                entry.cvss.severity,
+                entry.title,
+            )
+            return entry
 
-        for vuln in vulns:
-            try:
-                entry = self._build_report_entry(vuln)
-                entries.append(entry)
-                logger.info(
-                    "Phase 5 | %s  CVSS %.1f (%s)  %s",
-                    vuln.cwe,
-                    entry.cvss.base_score,
-                    entry.cvss.severity,
-                    entry.title,
-                )
-            except Exception as exc:
-                logger.error("Phase 5 | error on finding %s: %s", vuln.finding_id, exc)
+        entries = ordered_parallel(
+            vulns,
+            build,
+            max_workers=self.max_workers,
+            logger=logger,
+            error_label=lambda vuln: f"Phase 5 | error on finding {vuln.finding_id}",
+        )
 
         # Sort by CVSS descending
         entries.sort(key=lambda e: e.cvss.base_score, reverse=True)

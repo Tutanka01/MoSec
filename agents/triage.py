@@ -15,6 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from models.schemas import FileFinding, RawFinding, RepositoryManifest
+from utils.concurrency import ordered_parallel, resolve_workers
 from utils.llm import EmptyResponseError, LLMClient, LLMError
 
 logger = logging.getLogger(__name__)
@@ -38,25 +39,35 @@ _MAX_FILE_CHARS: int = 60_000
 class TriageAgent:
     """Phase 1: per-file LLM vulnerability triage."""
 
-    def __init__(self, llm: LLMClient, output_dir: str) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        output_dir: str,
+        max_workers: int | None = None,
+    ) -> None:
         self.llm = llm
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.max_workers = resolve_workers(max_workers, llm.max_concurrency)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def run(self, manifest: RepositoryManifest) -> list[FileFinding]:
-        all_findings: list[FileFinding] = []
+        def analyse(file_path: str) -> list[FileFinding]:
+            findings = self._analyse_file(file_path, manifest.repo_path)
+            logger.info("Phase 1 | %s → %d finding(s)", file_path, len(findings))
+            return findings
 
-        for file_path in manifest.files:
-            try:
-                findings = self._analyse_file(file_path, manifest.repo_path)
-                all_findings.extend(findings)
-                logger.info("Phase 1 | %s → %d finding(s)", file_path, len(findings))
-            except Exception as exc:
-                logger.error("Phase 1 | error on %s: %s", file_path, exc)
+        per_file = ordered_parallel(
+            manifest.files,
+            analyse,
+            max_workers=self.max_workers,
+            logger=logger,
+            error_label=lambda file_path: f"Phase 1 | error on {file_path}",
+        )
+        all_findings = [finding for findings in per_file for finding in findings]
 
         logger.info("Phase 1 complete | total findings: %d", len(all_findings))
 
